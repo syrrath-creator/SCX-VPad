@@ -1,0 +1,61 @@
+SCX Source Available - Noncommercial Distribution License 1.0
+
+Copyright (c) 2026 Tim Haller <tim.haller@gmail.com>.
+All rights reserved except as expressly granted below.
+
+1. Scope and definitions
+This license applies to the original SCX VPad software, source, binaries and
+documentation carrying this notice (the Software). The Licensor is Tim Haller.
+Separate third-party components remain subject
+to their own licenses; this license does not restrict rights under those licenses.
+
+Commercial Distribution means selling, licensing for a fee, renting, or otherwise
+supplying the Software or a derivative to third parties for commercial advantage
+or monetary compensation. It includes bundling the Software, modified or not,
+with a paid product, subscription, commercial installer, or commercial service,
+even when no separate charge is attributed to the Software. Offering paid access
+to the Software's functionality as a hosted service also requires permission.
+
+2. Grant
+Subject to this license, the Licensor grants you a worldwide, nonexclusive,
+royalty-free copyright license to inspect, use, reproduce, build, and modify the
+Software and to distribute it and derivatives on a noncommercial basis.
+Personal use and internal use within an organization, including a commercial
+organization, are permitted. Internal use does not authorize Commercial
+Distribution or offering the Software's functionality to external customers.
+
+3. Commercial Distribution requires prior written permission
+No right to Commercial Distribution is granted by this license. Before beginning
+Commercial Distribution you must obtain an express written license from the
+Licensor. Contact Tim Haller at tim.haller@gmail.com or through the official
+repository at https://github.com/syrrath-creator/SCX-VPad. Merely requesting permission, an
+unanswered request, public availability, or a lack of enforcement is not consent.
+The Licensor may distribute and license its own work under separate terms.
+
+4. Redistribution and modifications
+Every permitted distribution must retain this license, applicable copyright
+notices, and third-party notices, and must identify material modifications.
+You may not remove or relax the Commercial Distribution restriction for the
+Software or its derivatives. Recipients receive the permissions in this license
+directly from the Licensor; you may not imply authority to grant commercial
+rights on the Licensor's behalf. No trademark or endorsement rights are granted.
+
+5. Termination
+Rights under this license terminate automatically upon a material breach.
+Except for deliberate unauthorized Commercial Distribution, rights are reinstated
+if you cure the breach within 30 days after first becoming aware of it and have
+not previously had rights reinstated for the same breach. Accrued obligations
+and the restrictions on Commercial Distribution survive termination.
+
+6. No warranty; limitation of liability
+TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE SOFTWARE IS PROVIDED "AS IS",
+WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. THE LICENSOR AND
+CONTRIBUTORS ARE NOT LIABLE FOR CLAIMS, DAMAGES OR OTHER LIABILITY ARISING
+FROM THE SOFTWARE OR ITS USE. THIS CLAUSE DOES NOT EXCLUDE LIABILITY OR RIGHTS
+THAT CANNOT LAWFULLY BE EXCLUDED.
+
+This is a source-available license with a commercial-distribution restriction.
+It is not an OSI-approved open-source license.
+
+
