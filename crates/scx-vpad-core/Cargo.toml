@@ -1,0 +1,17 @@
+[package]
+name = "scx-vpad-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE"
+description = "Allocation-free SCX Virtual Pad report and ownership core"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+scx-vpad-protocol = { path = "../scx-vpad-protocol" }

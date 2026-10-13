@@ -1,0 +1,21 @@
+SCX VPad original code is licensed under the LICENSE file in this package.
+Copyright (c) 2026 Tim Haller <tim.haller@gmail.com>.
+
+Rust standard library and compiler runtimes: MIT OR Apache-2.0.
+https://github.com/rust-lang/rust
+windows-sys and windows-link: MIT OR Apache-2.0.
+https://github.com/microsoft/windows-rs
+
+Microsoft Windows Driver Kit headers, import libraries and tools are used to
+build this UMDF2 driver under Microsoft's applicable SDK/WDK terms. The WDK
+tool package itself is not distributed here. Windows-supplied HID/UMDF drivers
+are installed by Windows and are not redistributed as SCX binaries.
+
+No HIDMaestro source, binaries, SDK, profile JSON, private certificate or key
+is included. The original SCX implementation follows documented Windows and
+USB HID interfaces. Compatibility does not imply vendor affiliation.
+
+Complete applicable dependency license texts accompany source/package notices
+when dependencies are packaged. Build artifacts must be checked against the
+locked dependency inventory before publication.
+

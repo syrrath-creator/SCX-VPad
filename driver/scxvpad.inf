@@ -1,0 +1,63 @@
+; Copyright (c) 2026 SCX. See LICENSE. Original SCX software HID package.
+; Windows 11+ inbox HID/UMDF bridge; no SCX kernel binary or copied vendor driver.
+[Version]
+Signature="$WINDOWS NT$"
+Class=HIDClass
+ClassGuid={745a17a0-74d3-11d0-b6fe-00a0c90f57da}
+Provider=%Provider%
+DriverVer=10/13/2026,0.1.0.7
+CatalogFile=scxvpad.cat
+PnpLockdown=1
+
+[Manufacturer]
+%Provider%=SCX,NTamd64.10.0...22000
+
+[SCX.NTamd64.10.0...22000]
+%Device%=ScxDevice,SCX\VirtualPad
+
+[DestinationDirs]
+DriverFiles=13
+
+[SourceDisksNames]
+1=%Disk%,,,
+
+[SourceDisksFiles]
+ScxVPad.dll=1
+
+[ScxDevice.NT]
+CopyFiles=DriverFiles
+Include=MsHidUmdf.inf,WUDFRD.inf
+Needs=MsHidUmdf.NT,WUDFRD_LowerFilter.NT
+
+[ScxDevice.NT.HW]
+Include=MsHidUmdf.inf,WUDFRD.inf
+Needs=MsHidUmdf.NT.HW,WUDFRD_LowerFilter.NT.HW
+
+[ScxDevice.NT.Services]
+Include=MsHidUmdf.inf,WUDFRD.inf
+Needs=MsHidUmdf.NT.Services,WUDFRD_LowerFilter.NT.Services
+
+[ScxDevice.NT.Filters]
+Include=WUDFRD.inf
+Needs=WUDFRD_LowerFilter.NT.Filters
+
+[ScxDevice.NT.Wdf]
+UmdfService=ScxVPad,ScxUmdf
+UmdfServiceOrder=ScxVPad
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+UmdfFileObjectPolicy=AllowNullAndUnknownFileObjects
+UmdfMethodNeitherAction=Copy
+UmdfFsContextUsePolicy=CanUseFsContext2
+UmdfHostProcessSharing=ProcessSharingEnabled
+
+[ScxUmdf]
+UmdfLibraryVersion=2.25.0
+ServiceBinary=%13%\ScxVPad.dll
+
+[DriverFiles]
+ScxVPad.dll
+
+[Strings]
+Provider="SCX"
+Device="SCX Virtual Gamepad"
+Disk="SCX VirtualPad Driver"

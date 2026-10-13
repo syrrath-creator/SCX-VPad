@@ -1,0 +1,47 @@
+; Original SCX experimental XUSB-compatible UMDF2 function device.
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider=%Provider%
+DriverVer=10/13/2026,0.1.0.7
+CatalogFile=scxvpad.cat
+PnpLockdown=1
+
+[Manufacturer]
+%Provider%=SCX,NTamd64.10.0...22000
+[SCX.NTamd64.10.0...22000]
+%Device%=ScxXbox,SCX\VirtualXbox
+[DestinationDirs]
+DriverFiles=13
+[SourceDisksNames]
+1=%Disk%,,,
+[SourceDisksFiles]
+ScxVPad.dll=1
+[ScxXbox.NT]
+CopyFiles=DriverFiles
+Include=WUDFRD.inf
+Needs=WUDFRD.NT
+[ScxXbox.NT.HW]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.HW
+AddReg=ScxXbox.SecureOpen
+[ScxXbox.SecureOpen]
+HKR,,DeviceCharacteristics,0x10001,0x00000100
+[ScxXbox.NT.Services]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.Services
+[ScxXbox.NT.Wdf]
+UmdfService=ScxVPad,ScxUmdf
+UmdfServiceOrder=ScxVPad
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+UmdfHostProcessSharing=ProcessSharingEnabled
+[ScxUmdf]
+UmdfLibraryVersion=2.25.0
+ServiceBinary=%13%\ScxVPad.dll
+[DriverFiles]
+ScxVPad.dll
+[Strings]
+Provider="SCX"
+Device="SCX Virtual Xbox-compatible Controller (experimental)"
+Disk="SCX VirtualPad Driver"

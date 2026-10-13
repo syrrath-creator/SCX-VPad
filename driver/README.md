@@ -1,0 +1,158 @@
+# SCX original Windows binding
+
+This is a new UMDF2 HID minidriver and XUSB function driver, not a HIDMaestro fork. The Rust core owns
+the fixed byte protocol, validation, HID descriptor and report encoding. This
+small C binding owns the Windows framework handles, queued requests and device
+lifetime. It does not load a third-party driver DLL or contain a custom kernel
+binary. The Windows inbox `mshidumdf` bridge and `WUDFRd` reflector are required.
+
+## Device profiles and validation boundaries
+
+Profile 1 is an original generic HID gamepad with 32 buttons, a hat, four signed
+stick axes and two unsigned trigger axes. It is **not XInput**. Profiles 3 and 4
+implement experimental DualShock 4 and DualSense USB-compatible reports,
+synthetic calibration/identity, motion and touch fields, rumble and supported
+LED feedback. Their descriptors and encoders were newly written from published
+protocol facts, not copied from another virtual driver. They set the experimental
+capability bit until device/game testing verifies compatibility. Profile 2 is
+an experimental Xbox-compatible XUSB function device whose Windows XInput discovery
+and game compatibility require a separate live validation. Steam output is not
+implemented. Adaptive trigger programs and USB audio
+are explicitly unsupported. Generic HID does not expose motion/touch or rumble.
+
+The package currently targets x64 Windows 11, build 22000 or newer, because it
+uses the modern inbox `MsHidUmdf.inf` and `WUDFRD.inf` installation sections.
+The HID package binds `SCX\VirtualPad`; the separate System-class INF binds
+`SCX\VirtualXbox` for XUSB. Both INFs reference one DLL and one catalog. The HID control collection uses
+the vendor-defined HID usage page `0xff53`, usage `1`. Compatibility profiles
+use the manufacturer/product identifiers expected by their consumers; the
+generic profile uses vendor ID zero. No physical USB device is impersonated on
+the USB bus. The service owns each unique PnP instance.
+
+The service supplies immutable `DEVPROPKEY` values under GUID
+`{19f81049-3679-40f2-9689-2a2f61f8bd29}`: property 2 is a `UINT32` profile,
+property 3 a unique nonzero `UINT64` instance identity, and property 6 an opaque
+bootstrap identifier as a 32-character lowercase hexadecimal `STRING`. They are read once at
+device creation, checked for exact type/length, and never accepted over the
+data channel. Missing properties select only the backward-compatible generic
+profile; unsupported profiles fail device creation. The bootstrap identifier
+and its protected capability value are mandatory for all HID profiles.
+
+The XUSB profile additionally accepts immutable `UINT32` property 4, player
+index 0..3. The service reserves these four slots separately from its total
+device budget, reflecting the standard XInput API's four-controller limit.
+
+## Direct data path and multiple devices
+
+SCX sends `HidD_SetFeature` with report `0x7a`, a 32-byte per-lease capability,
+and the strict 64-byte versioned input packet: exactly 97 bytes. The obsolete
+unauthenticated report `0x7e` is removed and denied. This is the documented HID control-collection route;
+arbitrary private IOCTL routing through the HID class stack is not assumed.
+The service is not in the per-report data path. `HidD_GetFeature` report `0x7f`
+returns a 32-byte device-information block, never the secret capability.
+Callers allocate the collection's maximum feature buffer size (97 bytes), and
+the driver returns 33 meaningful
+bytes including the report ID. Sony-compatible outputs return feedback through
+vendor input report `0x7d`: the client can wait on `ReadFile` rather than poll.
+The same ID provides a feature snapshot. Output field masks are merged, so an
+RGB update does not erase an existing rumble state. Feedback is per device and
+has a monotonic sequence. Repeated identical outputs do not wake readers.
+
+Each device has independent state, sequence checks, a fixed 64-report FIFO,
+manual HID read queue, and a watchdog. Windows serializes callbacks within a
+device; different devices have no shared SCX lock. Duplicate gamepad states
+refresh liveness without waking HID readers. Different states are delivered
+in order, including quick press/release transitions. The same pipeline carries
+the feedback report; HIDClass routes it to the vendor collection. A full FIFO returns
+`STATUS_DEVICE_BUSY` without accepting the frame or consuming its sequence.
+The producer must retry/back off; silent transition loss is not success.
+
+While a non-neutral state is held, producers must submit a fresh sequence at
+least every 250 ms. After 500 ms without a valid frame, the watchdog discards
+stale queued states and emits neutral. It wakes at most four times per second
+while armed and does not run while neutral. There is no per-frame timer reset,
+input polling thread, heap allocation, or service round trip. These are design
+properties, **not measured end-to-end latency claims**.
+
+HID reads remain framework-owned in a manual queue until data arrives. Windows
+cancellation and device removal complete pending requests; the driver never
+stores raw app pointers or holds a request after completing it. Queue admission
+is bounded to 64 pending reads. Descriptor and report lengths are fixed, with
+no registry-supplied descriptors or arbitrary memory access.
+
+## Experimental XUSB function path
+
+The XUSB profile runs directly under the inbox UMDF reflector, outside HIDClass.
+The public XUSB interface implements versioned information, capabilities, state,
+LED, battery, and rumble requests using the original Rust byte codec. Unknown
+private extensions, guide waits and audio are rejected, rather than guessed.
+XInput's state packet number advances only when encoded controls change; SCX
+heartbeat timestamps and sequence numbers do not cause false state changes.
+
+The separate SCX control interface `{582a87fd-a2dd-43f1-9224-d7c0dfdcf45d}` uses
+the `SCXControl` reference. Private submit/info/feedback IOCTLs are rejected on
+public-interface handles. `FILE_DEVICE_SECURE_OPEN` applies the device ACL to
+the named reference as well. Submission takes exactly one Input64 packet;
+feedback waits take the last observed sequence and complete only on change or
+cancellation. The service is not in either data path. Feedback queues are bounded.
+
+`xinput_probe.exe` is a separate test consumer linked only against Windows and
+the C runtime, with no SCX core or client code. It loads Microsoft's system
+`xinput1_4.dll` and reports each slot's state, capabilities and battery as JSON
+lines. `--seconds 10` observes changes; `--slot 0 --rumble` explicitly requests
+a 100 ms motor pulse followed by a zero-motor command. It never creates or
+installs devices. A successful build alone is not proof of XInput compatibility.
+
+## Access and installation
+
+The service must supply a per-instance software-device security descriptor
+granting access only to SYSTEM and the configured owner's SID. No Everyone,
+Authenticated Users or generic interactive-user grant is introduced by the
+INF. Windows HIDClass assigns its own ACL to child collections, so their
+producer access is **not** secured by the parent PDO descriptor. Testing also
+confirmed that HIDClass forwards submissions as kernel requests and does not
+provide usable client impersonation. HID feature IOCTLs use `FILE_ANY_ACCESS`,
+so a successful zero-access open is not an authorization boundary either.
+
+The authenticated service instead generates a fresh 256-bit capability per
+lease. It provides that capability to its authorized owner client through the
+protected service pipe, and to the UMDF driver through a volatile registry
+bootstrap value. `HKLM\SOFTWARE\SCX\VirtualPad\Bootstrap\<identifier>` grants
+SYSTEM and elevated administrators full access, and the UMDF driver group read
+access. Only the opaque lookup
+identifier is published as a device property. The driver reads the exact 32-byte
+nonzero `REG_BINARY` value once at creation; missing/malformed provisioning fails
+closed. The service retains it for host restart during the lease and removes it
+when the lease ends.
+
+Every input submission compares all 32 capability bytes before touching the
+input queue, sequence or watchdog. This needs no allocation, impersonation,
+registry access or service round trip per input. The capability is never returned
+by any HID read/feature/diagnostic and is securely cleared when the device context
+is destroyed. This is a per-lease bearer capability: an authorized client must
+not disclose it. Public gamepad readers do not gain producer access. Bounded
+diagnostic feature `0x7c` reports status codes only, never capability data.
+The driver runs in UMDF's user-mode host; device creation remains a privileged
+service operation. Signing is not an authorization mechanism.
+
+`scripts/check-wdk.ps1` locates VS2022 C++/SDK and an installed WDK or the
+official Microsoft Windows WDK NuGet extraction. `scripts/build-driver.ps1`
+links the Rust static library and the C binding, checks the INF with Microsoft's
+InfVerif and creates the catalog with Inf2Cat. It does not install anything,
+create certificates, alter boot options or add a trust anchor. The local
+installer is a separate explicit administrative step.
+
+## Design references (no HIDMaestro code copied)
+
+- [Microsoft: Creating WDF HID minidrivers](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/creating-umdf-hid-minidrivers)
+- [Microsoft: HID sample documentation explaining control collections](https://github.com/microsoft/Windows-driver-samples/tree/main/hid/vhidmini2)
+- [Microsoft: UMDF SET_FEATURE marshalling](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidport/ni-hidport-ioctl_umdf_hid_set_feature)
+- [Microsoft: UMDF GET_FEATURE marshalling](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidport/ni-hidport-ioctl_umdf_hid_get_feature)
+- [Microsoft: WDF INF directives](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/specifying-wdf-directives-in-inf-files)
+- [Microsoft: UMDF client impersonation](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/handling-client-impersonation-in-umdf-drivers)
+- [Microsoft: Volatile registry keys and access control](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regcreatekeyexw)
+
+The implementation and descriptor were written for SCX. Standard WDF API usage
+and inbox INF section names follow Microsoft's documented contracts. The WDK
+headers and stub library are external Microsoft build dependencies and retain
+their own terms; they are not relicensed by the SCX source license.

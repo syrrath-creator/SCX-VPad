@@ -1,0 +1,20 @@
+/target/
+/.tooling/
+/dist/
+/validation/local/
+# Generated from the installed Rust toolchain and bundled in binary releases.
+/licenses/rust-COPYRIGHT-library.html
+*.pfx
+*.p12
+*.key
+*.pem
+*.cer
+*.cat
+*.pdb
+*.log
+*.obj
+*.lib
+*.exp
+*.dll
+*.exe
+

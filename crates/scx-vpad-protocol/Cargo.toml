@@ -1,0 +1,9 @@
+[package]
+name = "scx-vpad-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE"
+description = "Bounded wire format for SCX Virtual Pad"
+
+[dependencies]
