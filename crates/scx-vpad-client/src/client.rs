@@ -803,6 +803,59 @@ pub struct GamepadReader<const N: usize = 18> {
     profile: Profile,
 }
 impl<const N: usize> GamepadReader<N> {
+    /// Interpret a captured report through Windows' descriptor-based HID parser.
+    /// Diagnostic only: catches semantic descriptor errors which raw-byte tests miss.
+    pub fn windows_controls(&self, report: &[u8; N]) -> io::Result<([u32; 7], Vec<u16>)> {
+        let mut preparsed = 0;
+        check(unsafe { HidD_GetPreparsedData(self.device.0, &mut preparsed) } as i32)?;
+        let result = (|| {
+            let mut values = [0u32; 7];
+            for (index, usage) in [0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x39]
+                .into_iter()
+                .enumerate()
+            {
+                let status = unsafe {
+                    HidP_GetUsageValue(
+                        HidP_Input,
+                        1,
+                        0,
+                        usage,
+                        &mut values[index],
+                        preparsed,
+                        report.as_ptr(),
+                        N as u32,
+                    )
+                };
+                if status != HIDP_STATUS_SUCCESS {
+                    return Err(fail(&format!("HID usage {usage:#x}: {status:#x}")));
+                }
+            }
+            let mut buttons = [0u16; 32];
+            let mut count = buttons.len() as u32;
+            let mut button_report = *report;
+            let status = unsafe {
+                HidP_GetUsages(
+                    HidP_Input,
+                    9,
+                    0,
+                    buttons.as_mut_ptr(),
+                    &mut count,
+                    preparsed,
+                    button_report.as_mut_ptr(),
+                    N as u32,
+                )
+            };
+            if status != HIDP_STATUS_SUCCESS {
+                return Err(fail(&format!("HID buttons: {status:#x}")));
+            }
+            Ok((values, buttons[..count as usize].to_vec()))
+        })();
+        unsafe {
+            HidD_FreePreparsedData(preparsed);
+        }
+        result
+    }
+
     pub fn open(pad: &VirtualPad) -> io::Result<Self> {
         let expected = match pad.profile {
             Profile::GenericHid => 18,

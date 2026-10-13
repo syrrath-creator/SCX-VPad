@@ -1,4 +1,23 @@
-# 0.1.0 development preview
+# 0.1.0-preview.2 — Sony control mapping fix (native revision 0.1.0.8)
+
+- Correct Sony HID semantics: X/Y and Z/Rz describe the sticks, Rx/Ry describe
+  the independent triggers. Previously descriptor-based consumers interpreted
+  trigger values as stick positions, causing camera rotation and cross-talk.
+- Explicit Windows Gaming Input Gamepad and UI-navigation mappings for the
+  DS4/DualSense USB identities. Cross/A, Circle/B, Square/X, Triangle/Y,
+  Options/Menu, Share/View and stick clicks use the correct indices.
+- Preserve and restore pre-existing mapping values during installation/removal;
+  later external edits are retained. No per-report registry work or new polling.
+- Add semantic HID regression tests, a Windows HidP control probe, an independent
+  Windows Gaming Input consumer and real-registry installer recovery tests.
+- Existing SCX 2.1.1 clients keep working without rebuilding or changing profiles.
+  Close SCX and games, uninstall the previous preview, then install this package.
+  The installer needs UAC; ordinary controller connections remain unelevated.
+
+This fixes reproduced Windows API failures. Game-by-game confirmation is recorded
+in VALIDATION; it is not a claim that every game supports native Sony controllers.
+
+# 0.1.0-preview.1
 
 First independently implemented SCX VPad driver and Rust client SDK.
 

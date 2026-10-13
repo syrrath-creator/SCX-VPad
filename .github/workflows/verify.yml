@@ -23,6 +23,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./scripts/test-installer-recovery.ps1 -RequireWindowsPowerShell51
+      - name: Verify Sony GameInput mappings and registry recovery
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-gameinput-mappings.ps1
   driver:
     runs-on: windows-latest
     steps:
@@ -39,4 +43,7 @@ jobs:
       - name: Build and validate UMDF package
         shell: pwsh
         run: ./scripts/build-driver.ps1 -RustLibrary ./target/driver-core/release/scx_vpad_core.lib
+      - name: Build independent Windows Gaming Input diagnostic
+        shell: pwsh
+        run: ./scripts/build-wgi-probe.ps1
 

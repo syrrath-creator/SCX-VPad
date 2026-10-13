@@ -156,6 +156,8 @@ try {
         if ($stage.published.Count -ne 1) { throw 'Could not uniquely record the installed driver package; its staging journal is retained for safe recovery.' }
     }
     $serviceExe = Join-Path $destination 'bin\scx-vpad-service.exe'
+    . (Join-Path $destination 'installer\GameInput.ps1')
+    Install-ScxGameInputMappings
     & (Join-Path $windowsDirectory 'System32\sc.exe') create $serviceName binPath= ('"' + $serviceExe + '"') start= demand obj= LocalSystem DisplayName= 'SCX VPad Device Manager'
     if ($LASTEXITCODE -ne 0) { throw "Creating service failed: $LASTEXITCODE" }
     # Windows PowerShell 5's native argument marshalling can strip quotes passed

@@ -80,6 +80,10 @@ function Get-OwnedDriverPackages($InstallRecord, [string]$InstallRoot, [string]$
 $infDirectory = Join-Path $windowsDirectory 'INF'
 # Resolve and validate owned packages before stopping/removing anything.
 $ownedPackages = @(Get-OwnedDriverPackages $record $actual $infDirectory)
+if ($record.PSObject.Properties.Name -contains 'GameInputJournal') {
+    . (Join-Path $PSScriptRoot 'GameInput.ps1')
+    Restore-ScxGameInputMappings
+}
 $service = Get-Service -Name ScxVPad -ErrorAction SilentlyContinue
 if ($service) {
     $serviceConfig = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\ScxVPad'

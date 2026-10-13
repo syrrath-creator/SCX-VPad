@@ -47,8 +47,11 @@ explicit backpressure and stale-input neutralization.
 Generic HID does not expose Sony or Steam features. Sony profiles have synthetic
 SCX calibration, identity and feature replies, not copied hardware firmware.
 Native USB audio, adaptive trigger effects, Bluetooth radio emulation, console
-pairing, Steam-controller output, Windows Gaming Input and GameInput compatibility
-are not implemented or validated. The generic profile has no rumble protocol.
+pairing and Steam-controller output are not implemented. The generic profile has
+no rumble protocol. Revision 0.1.0.8 corrects Sony HID axis usages and installs
+explicit Windows Gaming Input mappings for its two Sony USB identities. GameInput
+shares Microsoft's mapping registry; a separate GameInput SDK/game test is still
+required. See VALIDATION for the exact tested APIs and remaining game checks.
 Do not assume universal game support from a protocol or enumeration test.
 
 ## Build
@@ -94,6 +97,13 @@ local/domain/MS-account Windows user; changing that owner is administrative.
 It installs only SCX VPad under
 `Program Files\SCX VPad`, records its own driver package and certificate, and
 does not change existing controller-driver installations.
+
+Sony Gamepad and UINavigation mappings are installed for USB IDs 054C:09CC and
+054C:0CE6. Windows scopes these mappings to VID/PID/usage, so they also affect
+matching physical USB controllers. Their layout follows native Sony axes/buttons;
+DualSense Edge and Bluetooth identities are not modified. Previous values are
+journaled in the protected installation record. Uninstall restores prior values
+only while they still match SCX's installed values, preserving later external edits.
 
 The signing key is local, nonexportable and restricted to administrators and
 SYSTEM. Installation failures are recorded under `Program Files\SCX VPad\logs`.

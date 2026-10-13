@@ -1,5 +1,46 @@
 # Windows validation record
 
+## Revision 0.1.0.8 — Sony mapping regression
+
+Reported with Steam Controller -> DualShock 4 / DualSense, SCX VPad, Steam
+closed, Gears of War Windows Store edition. Camera drift, trigger/camera cross-talk
+and incorrect face-button behavior were reported by the user.
+
+Reproduced before the fix independently of the app/physical controller:
+
+- Windows HidP decoded Sony neutral axes as X/Y/Z/Rx/Ry/Rz =
+  128/128/0/128/128/0. L2 changed Z and R2 changed Rz. Both Sony profiles failed
+  all eight initial semantic cases, although raw-byte and SDL tests had passed.
+- Windows Gaming Input exposed no Gamepad mapping for the DS4 identity on this
+  PC. The existing DualSense registry mapping used generic button/axis indices:
+  Cross became B, Square became A, L2/R2 became View/Menu, and the right stick
+  and trigger values were mixed. The installer now journals these prior values.
+
+Build verification: 56 Rust tests pass; Clippy with warnings denied passes;
+native ABI check, both INF validations and catalog signability pass. The mapping
+installer runs under Windows PowerShell 5.1 and has tested existing-value
+restoration, external-edit preservation, duplicate-install refusal and cleanup.
+
+Installed-driver verification completed on 2026-10-13:
+
+- Fresh install of native revision 0.1.0.8, service running, locally signed;
+  no elevation for any test client. Previous Sony mappings are journaled.
+- 58 semantic Windows HidP cases pass (29 each for DS4 and DualSense): neutral,
+  all 14 HID buttons, both independent triggers, full stick extremes, eight
+  D-pad directions, combined buttons/triggers/stick and final release.
+- Independent C++/WinRT Windows Gaming Input consumer: both profiles pass,
+  1,978 observations total with no persistent mismatch. Coverage includes all
+  14 buttons, all nine switch states and minimum/maximum for all six axes.
+  Cross maps to A, Circle to B, Square to X, Triangle to Y; neutral triggers
+  read exactly zero, and neutral sticks read the normal 8-bit midpoint
+  (+/-0.00392157), rather than a full deflection.
+- Generic HID four-controller isolation, watchdog neutralization, lease removal,
+  Sony feature/rumble/RGB feedback, and Microsoft XInput state/rumble/stop
+  regression checks all pass.
+
+The user's in-game Gears retest remains pending. No universal game compatibility
+claim is inferred from these Windows API tests.
+
 Development validation on 2026-10-13, Windows 11 x64 build 26300. Secure Boot
 remained enabled. No test-signing, signature-enforcement, Memory Integrity or
 anti-cheat settings were changed. This is not Microsoft certification.
@@ -74,7 +115,8 @@ patterns and later revisions require fresh measurements.
 ## Scope of the evidence
 
 The initial target is Windows 11 x64. Windows 10, ARM64, console compatibility,
-Windows Gaming Input, GameInput, USB audio and native adaptive triggers are not
-validated. Reboot persistence, long-duration soak testing, broad game coverage
+GameInput SDK, USB audio and native adaptive triggers are not validated. The
+original preview also lacked Windows Gaming Input validation; see the revision
+0.1.0.8 regression record above. Reboot persistence, long-duration soak testing, broad game coverage
 and independent security review remain production-readiness work. A locally
 trusted signature does not guarantee acceptance by anti-cheat software.

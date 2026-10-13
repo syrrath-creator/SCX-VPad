@@ -276,13 +276,16 @@ impl Descriptor {
     }
 }
 const fn build_descriptor(ds5: bool) -> Descriptor {
+    // Sony USB reports use X/Y and Z/Rz for the two sticks; Rx/Ry are
+    // independent triggers. Raw-byte consumers hide mistakes here, but HID
+    // consumers (including Windows Gaming Input) follow these usages.
     let mut d = Descriptor::new().append(&[
         0x05, 1, 0x09, 5, 0xa1, 1, 0x85, 1, 0x15, 0, 0x26, 0xff, 0, 0x75, 8, 0x95, 4, 0x09, 0x30,
-        0x09, 0x31, 0x09, 0x33, 0x09, 0x34, 0x81, 2,
+        0x09, 0x31, 0x09, 0x32, 0x09, 0x35, 0x81, 2,
     ]);
     if ds5 {
         d = d.append(&[
-            0x09, 0x32, 0x09, 0x35, 0x95, 2, 0x81, 2, 0x06, 0x53, 0xff, 0x09, 0x10, 0x95, 1, 0x81,
+            0x09, 0x33, 0x09, 0x34, 0x95, 2, 0x81, 2, 0x06, 0x53, 0xff, 0x09, 0x10, 0x95, 1, 0x81,
             2, 0x05, 1,
         ]);
     }
@@ -342,7 +345,7 @@ const fn build_descriptor(ds5: bool) -> Descriptor {
     ]);
     if !ds5 {
         d = d.append(&[
-            0x05, 1, 0x09, 0x32, 0x09, 0x35, 0x15, 0, 0x26, 0xff, 0, 0x75, 8, 0x95, 2, 0x81, 2,
+            0x05, 1, 0x09, 0x33, 0x09, 0x34, 0x15, 0, 0x26, 0xff, 0, 0x75, 8, 0x95, 2, 0x81, 2,
         ]);
     }
     d = d.append(&[
@@ -396,6 +399,98 @@ pub fn descriptor(profile: Profile) -> Option<&'static [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // A small independent HID item interpreter: bind fields by semantic usage,
+    // never by the encoder's hard-coded offsets. Native HidP + WGI probes cover
+    // the installed descriptor separately on Windows.
+    fn desktop_values(profile: Profile, state: InputState) -> [u32; 7] {
+        let bytes = descriptor(profile).unwrap();
+        let report = encode(profile, &state).unwrap();
+        let (mut pos, mut page, mut id, mut size, mut count) = (0, 0, 0, 0, 0);
+        let mut offsets = [8usize; 256]; // report ID occupies the first byte
+        let mut usages = Vec::new();
+        let mut result = [u32::MAX; 7];
+        while pos < bytes.len() {
+            let tag = bytes[pos];
+            pos += 1;
+            let n = if tag & 3 == 3 { 4 } else { (tag & 3) as usize };
+            let mut value = 0u32;
+            for i in 0..n {
+                value |= (bytes[pos + i] as u32) << (8 * i);
+            }
+            pos += n;
+            match tag & 0xfc {
+                0x04 => page = value,
+                0x08 => usages.push(value),
+                0x74 => size = value as usize,
+                0x94 => count = value as usize,
+                0x84 => id = value as usize,
+                0x80 => {
+                    if page == 1 && id == 1 && value & 1 == 0 {
+                        assert_eq!(usages.len(), count);
+                        for (field, usage) in usages.iter().enumerate() {
+                            if let Some(index) = [0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x39]
+                                .iter()
+                                .position(|u| u == usage)
+                            {
+                                let mut decoded = 0;
+                                for bit in 0..size {
+                                    let offset = offsets[id] + field * size + bit;
+                                    decoded |=
+                                        u32::from((report[offset / 8] >> (offset % 8)) & 1) << bit;
+                                }
+                                assert_eq!(result[index], u32::MAX, "duplicate HID usage");
+                                result[index] = decoded;
+                            }
+                        }
+                    }
+                    offsets[id] += size * count;
+                }
+                _ => (),
+            }
+            if tag & 0x0c == 0 {
+                usages.clear();
+            }
+        }
+        result
+    }
+    #[test]
+    fn sony_descriptors_separate_sticks_and_triggers_by_hid_usage() {
+        for profile in [Profile::DualShock4, Profile::DualSense] {
+            assert_eq!(
+                desktop_values(profile, InputState::NEUTRAL),
+                [128, 128, 128, 0, 0, 128, 8]
+            );
+            let fields: [fn(&mut InputState); 6] = [
+                |s| s.left_x = i16::MAX,
+                |s| s.left_y = i16::MIN,
+                |s| s.right_x = i16::MIN,
+                |s| s.left_trigger = u16::MAX,
+                |s| s.right_trigger = u16::MAX,
+                |s| s.right_y = i16::MAX,
+            ];
+            for (index, set) in fields.iter().enumerate() {
+                let mut state = InputState::NEUTRAL;
+                set(&mut state);
+                let mut expected = [128, 128, 128, 0, 0, 128, 8];
+                expected[index] = if index == 1 || index == 2 { 0 } else { 255 };
+                assert_eq!(desktop_values(profile, state), expected);
+            }
+            for hat in 0..=8 {
+                let mut expected = [128, 128, 128, 0, 0, 128, 8];
+                expected[6] = u32::from(hat);
+                assert_eq!(
+                    desktop_values(
+                        profile,
+                        InputState {
+                            hat,
+                            ..InputState::NEUTRAL
+                        }
+                    ),
+                    expected
+                );
+            }
+        }
+    }
     #[test]
     fn neutral_profiles_have_centered_axes_released_hat_and_no_phantom_fingers() {
         for profile in [Profile::DualShock4, Profile::DualSense] {
