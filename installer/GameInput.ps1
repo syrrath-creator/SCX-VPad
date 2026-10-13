@@ -23,7 +23,20 @@ function Get-ScxSonyMappings {
     foreach ($entry in @(@('Accept',1),@('Cancel',2),@('View',8),@('Menu',9))) {
         $leaves['UINavigation\' + $entry[0]] = @{ ButtonIndex=[int]$entry[1] }
     }
+    # The logical Gamepad API still calls these A/B/X/Y. Labels tell games the
+    # actual printed symbols; a button mapping alone leaves Xbox-style glyphs.
+    $labels = @{}
+    $names = @('Square','Cross','Circle','Triangle','Left1','Right1','Left2','Right2','Share','Options','Left3','Right3')
+    for ($i=0; $i -lt $names.Count; $i++) { $labels["Button$i"] = $names[$i] }
+    $leaves['Labels\Buttons'] = $labels
+    $leaves['Labels\Axes'] = @{ Axis3='Left2'; Axis4='Right2' }
+    $leaves['Labels\Switches'] = @{ Switch0Up='Up'; Switch0Down='Down'; Switch0Left='Left'; Switch0Right='Right' }
     return $leaves
+}
+
+function Get-ScxMappingFields([string]$Leaf, $Mappings) {
+    if ($Leaf.StartsWith('Labels\')) { return @($Mappings[$Leaf].Keys) }
+    return @('ButtonIndex','AxisIndex','Invert','SwitchIndex','SwitchPosition','IncludeAdjacent','ThresholdPercent','DebouncePercent','MaxValueButtonIndex','MinValueButtonIndex','MaxValueSwitchPosition')
 }
 
 function Get-ScxRegistryValue($Key, [string]$Name) {
@@ -56,11 +69,11 @@ function Install-ScxGameInputMappings {
         if ($product.GetValueNames() -contains 'GameInputJournal') { throw 'GameInput mappings have already been journaled; restore them before reinstalling.' }
         $base = 'SYSTEM\CurrentControlSet\Control\GameInput\Devices'
         $mappings = Get-ScxSonyMappings
-        $fields = @('ButtonIndex','AxisIndex','Invert','SwitchIndex','SwitchPosition','IncludeAdjacent','ThresholdPercent','DebouncePercent','MaxValueButtonIndex','MinValueButtonIndex','MaxValueSwitchPosition')
         $entries = @()
         $created = @{}
         foreach ($id in @('054C09CC00010005','054C0CE600010005')) {
             foreach ($leaf in $mappings.Keys) {
+                $fields = Get-ScxMappingFields $leaf $mappings
                 $path = "$base\$id\$leaf"
                 # Journal missing key ancestors so uninstall removes empty keys only.
                 foreach ($relative in @($id, ($id + '\' + ($leaf -split '\\')[0]), ($id + '\' + $leaf))) {
@@ -90,7 +103,7 @@ function Install-ScxGameInputMappings {
             $key = $MachineRoot.CreateSubKey($entry.path)
             try { Set-ScxRegistryValue $key $entry.name $entry.after } finally { $key.Dispose() }
         }
-        $product.SetValue('GameInputMappingVersion', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $product.SetValue('GameInputMappingVersion', 2, [Microsoft.Win32.RegistryValueKind]::DWord)
     } finally { $product.Dispose() }
 }
 
@@ -104,15 +117,18 @@ function Restore-ScxGameInputMappings {
         if ($journal.version -ne 1) { throw 'Unknown GameInput journal version.' }
         $base = 'SYSTEM\CurrentControlSet\Control\GameInput\Devices'
         $allowed = @{}
+        $allowedValues = @{}
+        $mappings = Get-ScxSonyMappings
         foreach ($id in @('054C09CC00010005','054C0CE600010005')) {
             $allowed["$base\$id"] = $true
-            foreach ($leaf in (Get-ScxSonyMappings).Keys) {
+            foreach ($leaf in $mappings.Keys) {
                 $allowed["$base\$id\$leaf"] = $true
                 $allowed["$base\$id\" + ($leaf -split '\\')[0]] = $true
+                foreach ($field in (Get-ScxMappingFields $leaf $mappings)) { $allowedValues["$base\$id\$leaf|$field"] = $true }
             }
         }
         foreach ($entry in $journal.entries) {
-            if (-not $allowed.ContainsKey([string]$entry.path) -or $entry.name -notmatch '^(ButtonIndex|AxisIndex|Invert|SwitchIndex|SwitchPosition|IncludeAdjacent|ThresholdPercent|DebouncePercent|MaxValueButtonIndex|MinValueButtonIndex|MaxValueSwitchPosition)$') { throw 'Unexpected GameInput journal path or field.' }
+            if (-not $allowedValues.ContainsKey("$($entry.path)|$($entry.name)")) { throw 'Unexpected GameInput journal path or field.' }
         }
         foreach ($path in $journal.created) { if (-not $allowed.ContainsKey([string]$path)) { throw 'Unexpected GameInput cleanup path.' } }
         foreach ($entry in $journal.entries) {

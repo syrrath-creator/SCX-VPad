@@ -18,6 +18,7 @@ use windows_sys::{
 
 const HID_GUID: GUID = GUID::from_u128(0x4d1e55b2_f16f_11cf_88cb_001111000030);
 const XUSB_CONTROL_GUID: GUID = GUID::from_u128(0x582a87fd_a2dd_43f1_9224_d7c0dfdcf45d);
+const XUSB_GAME_GUID: GUID = GUID::from_u128(0xec87f1e3_c13b_4100_b5f7_8b84d54260cb);
 const XUSB_SUBMIT: u32 = 0x22a000;
 const XUSB_INFO: u32 = 0x226004;
 const XUSB_FEEDBACK_WAIT: u32 = 0x226008;
@@ -110,6 +111,44 @@ impl VirtualPad {
     }
     pub fn instance_id(&self) -> &str {
         &self.instance
+    }
+    /// Read-only per-device I/O counters for compatibility diagnostics.
+    pub fn consumer_diagnostics(&self) -> io::Result<Vec<u32>> {
+        let mut bytes = [0u8; HID_FEATURE_REPORT_SIZE];
+        let data = if self.profile == Profile::Xbox360 {
+            let n = ioctl(
+                &self.device,
+                &self.io_event,
+                0x226010,
+                &[],
+                &mut bytes[..40],
+                1000,
+            )?;
+            if n != 40 {
+                return Err(fail("Unexpected diagnostic size"));
+            }
+            &bytes[..40]
+        } else {
+            bytes[0] = 0x79;
+            check(unsafe {
+                HidD_GetFeature(self.device.0, bytes.as_mut_ptr().cast(), bytes.len() as u32)
+            } as i32)?;
+            &bytes[1..33]
+        };
+        Ok(data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| u32::from_le_bytes(*b))
+            .collect())
+    }
+    /// Test consumer for this lease's public XUSB endpoint, never another pad.
+    pub fn open_xusb_consumer(&self) -> io::Result<Handle> {
+        if self.profile != Profile::Xbox360 {
+            return Err(fail("Xbox profile required"));
+        }
+        find_collection(&self.instance, false, true)?
+            .ok_or_else(|| fail("Own XUSB consumer endpoint missing"))
     }
     /// Inspect the real producer endpoint, including HID collection security.
     /// This does not modify ACLs or grant permissions.
@@ -587,7 +626,15 @@ fn find_endpoint(
     control: bool,
     xusb: bool,
 ) -> io::Result<Option<(Handle, String)>> {
-    let guid = if xusb { &XUSB_CONTROL_GUID } else { &HID_GUID };
+    let guid = if xusb {
+        if control {
+            &XUSB_CONTROL_GUID
+        } else {
+            &XUSB_GAME_GUID
+        }
+    } else {
+        &HID_GUID
+    };
     let set = unsafe {
         SetupDiGetClassDevsW(
             guid,
@@ -673,7 +720,7 @@ fn find_endpoint(
         let Ok(h) = Handle::new(unsafe {
             CreateFileW(
                 path,
-                if control {
+                if control || xusb {
                     GENERIC_READ | GENERIC_WRITE
                 } else {
                     GENERIC_READ

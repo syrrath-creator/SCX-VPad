@@ -22,7 +22,7 @@ are explicitly unsupported. Generic HID does not expose motion/touch or rumble.
 
 The package currently targets x64 Windows 11, build 22000 or newer, because it
 uses the modern inbox `MsHidUmdf.inf` and `WUDFRD.inf` installation sections.
-The HID package binds `SCX\VirtualPad`; the separate System-class INF binds
+The HID package binds `SCX\VirtualPad`; the separate XnaComposite-class INF binds
 `SCX\VirtualXbox` for XUSB. Both INFs reference one DLL and one catalog. The HID control collection uses
 the vendor-defined HID usage page `0xff53`, usage `1`. Compatibility profiles
 use the manufacturer/product identifiers expected by their consumers; the

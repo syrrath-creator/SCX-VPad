@@ -8,5 +8,5 @@ foreach($name in @('ucrt','um','shared','winrt','cppwinrt')) {$includePaths+=Joi
 $libPaths=@((Join-Path $kit.MsvcRoot 'lib/x64'))
 foreach($name in @('ucrt','um')) {$libPaths+=Join-Path $kit.SdkRoot "Lib/$($kit.SdkVersion)/$name/x64"}
 $compile=@('/nologo','/std:c++20','/EHsc','/O2','/MT','/W4',"/Fo$out/wgi_probe.obj",(Join-Path $root 'driver/wgi_probe.cpp'))+($includePaths | ForEach-Object {"/I$_"})
-& $kit.Cl @compile /link "/OUT:$out/wgi_probe.exe" 'windowsapp.lib' 'runtimeobject.lib' 'kernel32.lib' @($libPaths | ForEach-Object {"/LIBPATH:$_"})
+& $kit.Cl @compile /link "/OUT:$out/wgi_probe.exe" 'windowsapp.lib' 'runtimeobject.lib' 'kernel32.lib' 'user32.lib' 'gdi32.lib' @($libPaths | ForEach-Object {"/LIBPATH:$_"})
 if($LASTEXITCODE -ne 0){throw 'WGI probe build failed'}

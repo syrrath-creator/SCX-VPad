@@ -24,7 +24,9 @@ source, descriptor arrays, control-flow implementation, or binary is included.
 ## Interface
 
 Discovery GUID: `{EC87F1E3-C13B-4100-B5F7-8B84D54260CB}`.
-Install as a separate `System` UMDF function device. HIDCLASS does not forward
+Install as a separate `XnaComposite` UMDF function device, using the setup class
+defined by Windows' inbox xusb22.inf. WGI skipped the previous System-class
+device. No dummy UpperFilters entry is used. HIDCLASS does not forward
 arbitrary user IOCTLs to a HID minidriver. Publish a separate SCX control
 interface for producer submissions and enforce the authenticated owner there.
 Consumers need ordinary controller read/rumble access, not producer access.
@@ -39,14 +41,20 @@ the global XInput player slot. A base request is `version:u16,index:u8`.
 | Capabilities | `8000E004` | base | 24 bytes for v0101; 36 for v0102+ |
 | LED | `8000E008` | base | version:u16, pattern:u8 |
 | State | `8000E00C` | base | 29 bytes; legacy one-byte index request gets 20 |
-| Output | `8000A010` | five bytes | no response; decoded feedback |
+| Output | `8000A010` | five bytes (XInput) or nine bytes (WGI) | no response; decoded feedback |
 | Battery | `8000E018` | base + device type | version:u16, type:u8, level:u8 |
-| Wait for input | `8000E3AC` | not established here | native queue required; not synchronously faked |
+| Wait for input | `8000E3AC` | base + mode flags; empty/base also accepted | event-driven 29-byte input/resumed reply |
+| Extended information | `8000E3FC` | empty | 64 bytes, single wired identity |
+| Power information | `80006380` | empty | success, no payload |
 | Guide wait | `8000E014` | base | unsupported in this revision |
 
 Modern state: version at0, active status at2, packet number at5, buttons at11,
 triggers at13/14, signed axes at15/17/19/21. The optional resumed encoder sets
-status3 and marker0x14 at10; it is reserved for an event-driven WGI integration.
+status3 and marker0x14 at10. WGI receives these through the manual input queue.
+Windows was observed to send `02 01 00 02`, followed by `02 01 00 03` after
+discovery. A mode transition replays one current snapshot for the new input
+sink. In a fixed mode, requests wait for control changes; unchanged submissions
+do not start a polling/completion loop. Queues are bounded and cancellable.
 
 Capabilities v0101: buttons4, triggers6/7, axes8..15, motor maxima22/23.
 Capabilities v0102+: buttons16, triggers18/19, axes20..27, motor maxima34/35;
@@ -54,7 +62,9 @@ VID/PID/version are6/8/10. These motor maxima are byte fields, not the public
 XINPUT_VIBRATION structure.
 
 Output: index0, LED pattern1, left/right motor2/3, validity flags4 (LED1,
-rumble2). A LED-only update must preserve motor state. No audio device, power
+rumble2). Windows WGI sends a nine-byte envelope with this same prefix; the
+four trailing bytes are accepted but not interpreted as extra SCX capabilities.
+A LED-only update must preserve motor state. No audio device, power
 management controller, or extended firmware capability is fabricated.
 
 ## SCX implementation decisions and required proof

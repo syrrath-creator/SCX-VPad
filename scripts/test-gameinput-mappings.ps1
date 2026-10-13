@@ -10,11 +10,17 @@ try {
     $old = $root.CreateSubKey("$base\054C0CE600010005\Gamepad\A")
     $old.SetValue('ButtonIndex',0,[Microsoft.Win32.RegistryValueKind]::DWord)
     $old.SetValue('VendorNote','preserve me'); $old.Dispose()
+    $old = $root.CreateSubKey("$base\054C0CE600010005\Labels\Buttons")
+    $old.SetValue('Button1','LetterA'); $old.SetValue('UnrelatedLabel','keep'); $old.Dispose()
     Install-ScxGameInputMappings -MachineRoot $root
     foreach ($id in @('054C09CC00010005','054C0CE600010005')) {
         foreach ($check in @(@('Gamepad\A','ButtonIndex',1),@('Gamepad\B','ButtonIndex',2),@('Gamepad\X','ButtonIndex',0),@('Gamepad\RightThumbstickY','AxisIndex',5),@('Gamepad\LeftTrigger','AxisIndex',3),@('Gamepad\RightTrigger','AxisIndex',4),@('UINavigation\Accept','ButtonIndex',1))) {
             $key = $root.OpenSubKey("$base\$id\$($check[0])")
             try { if ($key.GetValue($check[1]) -ne $check[2]) { throw "Incorrect mapping $id $($check[0])" } } finally { $key.Dispose() }
+        }
+        foreach ($check in @(@('Buttons','Button0','Square'),@('Buttons','Button1','Cross'),@('Buttons','Button2','Circle'),@('Buttons','Button3','Triangle'),@('Axes','Axis3','Left2'),@('Switches','Switch0Up','Up'))) {
+            $key = $root.OpenSubKey("$base\$id\Labels\$($check[0])")
+            try { if ($key.GetValue($check[1]) -cne $check[2] -or $key.GetValueKind($check[1]) -ne 'String') { throw 'Incorrect Sony label or registry type.' } } finally { $key.Dispose() }
         }
     }
     $blocked = $false
@@ -24,6 +30,8 @@ try {
     $changed = $root.OpenSubKey("$base\054C0CE600010005\Gamepad\B", $true)
     $changed.SetValue('ButtonIndex',42,[Microsoft.Win32.RegistryValueKind]::DWord); $changed.Dispose()
     Restore-ScxGameInputMappings -MachineRoot $root
+    $old = $root.OpenSubKey("$base\054C0CE600010005\Labels\Buttons")
+    try { if ($old.GetValue('Button1') -ne 'LetterA' -or $old.GetValue('UnrelatedLabel') -ne 'keep') { throw 'Existing labels were not restored.' } } finally { $old.Dispose() }
     $old = $root.OpenSubKey("$base\054C0CE600010005\Gamepad\A")
     try { if ($old.GetValue('ButtonIndex') -ne 0 -or $old.GetValue('VendorNote') -ne 'preserve me') { throw 'Original mapping was not restored.' } } finally { $old.Dispose() }
     $changed = $root.OpenSubKey("$base\054C0CE600010005\Gamepad\B")

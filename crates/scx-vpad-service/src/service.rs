@@ -721,13 +721,32 @@ impl Device {
         let acl = SecurityDescriptor::new(&format!("O:SYG:SYD:P(A;;GA;;;SY)(A;;GRGW;;;{owner})"))?;
         // Reuse a bounded set of owned PnP identities. The slot is released only
         // after SwDeviceClose; Windows serializes recreation after old removal.
-        let id = wide(&format!("PAD-{owner}-{}-{slot:02}", profile as u32));
-        let hardware = wide(if profile == Profile::Xbox360 {
-            "SCX\\VirtualXbox\0"
-        } else {
-            "SCX\\VirtualPad\0"
+        let persona = match profile {
+            Profile::Xbox360 => "VID_045E&PID_028E&IG_00",
+            Profile::DualShock4 => "VID_054C&PID_09CC",
+            Profile::DualSense => "VID_054C&PID_0CE6",
+            _ => "GENERIC",
+        };
+        let id = wide(&format!(
+            "{persona}&PAD-{owner}-{}-{slot:02}",
+            profile as u32
+        ));
+        // HIDClass derives the game collection's hardware IDs from the first
+        // parent ID, not solely from IOCTL_HID_GET_DEVICE_ATTRIBUTES. Omitting
+        // the PID makes native game parsers see a generic pad despite correct
+        // attributes. The trailing SCX ID remains the driver binding target.
+        let hardware = wide(match profile {
+            Profile::Xbox360 => "SCX\\VID_045E&PID_028E&IG_00\0SCX\\VirtualXbox\0",
+            Profile::DualShock4 => "SCX\\VID_054C&PID_09CC\0SCX\\VirtualPad\0",
+            Profile::DualSense => "SCX\\VID_054C&PID_0CE6\0SCX\\VirtualPad\0",
+            _ => "SCX\\VirtualPad\0",
         });
-        let name = wide("SCX Virtual Gamepad");
+        let name = wide(match profile {
+            Profile::Xbox360 => "SCX Xbox 360",
+            Profile::DualShock4 => "SCX DualShock 4",
+            Profile::DualSense => "SCX DualSense",
+            _ => "SCX Virtual Gamepad",
+        });
         let mut identity = device_identity(identity_seed, profile, slot);
         let container = GUID::from_u128(
             ((identity_seed as u128) << 64) | 0x5343580000000000u128 | (identity as u128 & 0xfff),

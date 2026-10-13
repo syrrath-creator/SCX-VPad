@@ -1,10 +1,12 @@
 ; Original SCX experimental XUSB-compatible UMDF2 function device.
 [Version]
 Signature="$WINDOWS NT$"
-Class=System
-ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
+; Use Windows' Xbox setup class (as defined by the inbox xusb22.inf).
+; WGI does not admit a generic System-class function device into its providers.
+Class=XnaComposite
+ClassGuid={d61ca365-5af4-4486-998b-9db4734c6ca3}
 Provider=%Provider%
-DriverVer=10/13/2026,0.1.0.8
+DriverVer=10/13/2026,0.1.0.18
 CatalogFile=scxvpad.cat
 PnpLockdown=1
 

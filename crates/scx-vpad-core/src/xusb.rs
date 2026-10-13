@@ -131,6 +131,18 @@ pub fn query(
             word(&mut r.bytes, 10, 0x028e);
             Ok(r)
         }
+        GET_INFORMATION_EX => {
+            if !request.is_empty() {
+                return Err(XusbError::Length);
+            }
+            let mut r = Reply::new(64);
+            word(&mut r.bytes, 0, VERSION);
+            r.bytes[2] = 1;
+            r.bytes[3] = 1;
+            word(&mut r.bytes, 8, 0x045e);
+            word(&mut r.bytes, 10, 0x028e);
+            Ok(r)
+        }
         GET_STATE => {
             let Some(state) = state else {
                 return Err(XusbError::InvalidInput);
@@ -206,7 +218,10 @@ pub fn query(
 }
 
 pub fn decode_output(request: &[u8]) -> Result<Feedback, XusbError> {
-    if request.len() != 5 {
+    // WGI sends nine bytes, with the same five-byte motor/LED prefix as
+    // XInputSetState. Its four-byte extension is not an advertised SCX feature.
+    // Accept the observed bounded envelope; decode only the supported prefix.
+    if request.len() != 5 && request.len() != 9 {
         return Err(XusbError::Length);
     }
     if request[0] != 0 {
@@ -313,7 +328,7 @@ pub unsafe extern "C" fn scx_vpad_xusb_decode_output(
     if request.is_null() || feedback.is_null() {
         return STATUS_INVALID_POINTER;
     }
-    if length != 5 {
+    if length != 5 && length != 9 {
         return STATUS_INVALID_LENGTH;
     }
     if capacity < FEEDBACK_PACKET_SIZE {
@@ -370,6 +385,15 @@ pub unsafe extern "C" fn scx_vpad_xusb_state_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn extended_discovery_identifies_one_wired_xbox_and_is_bounded() {
+        let reply = query(GET_INFORMATION_EX, &[], None, 0, 0, 6).unwrap();
+        assert_eq!(reply.length, 64);
+        assert_eq!(&reply.bytes[..4], &[3, 1, 1, 1]);
+        assert_eq!(&reply.bytes[8..12], &[0x5e, 4, 0x8e, 2]);
+        assert_eq!(&reply.bytes[12..], &[0; 52]);
+        assert!(query(GET_INFORMATION_EX, &[0], None, 0, 0, 6).is_err());
+    }
     #[test]
     fn ffi_query_rejects_bad_bounds_without_writing_and_supports_overlap() {
         let mut packet = InputState::NEUTRAL.encode();
@@ -510,6 +534,24 @@ mod tests {
             decode_output(&[0, 0, 0, 0, 128]),
             Err(XusbError::InvalidInput)
         );
+    }
+    #[test]
+    fn wgi_extended_output_keeps_standard_motors_and_ignores_extension() {
+        for tail in [[1, 1, 0, 0], [255; 4]] {
+            let mut packet = [0, 0, 63, 127, 2, 0, 0, 0, 0];
+            packet[5..].copy_from_slice(&tail);
+            let f = decode_output(&packet).unwrap();
+            assert_eq!(f.valid, FEEDBACK_RUMBLE);
+            assert_eq!((f.left_motor, f.right_motor), (63 * 257, 127 * 257));
+            packet[2..4].fill(0);
+            let stop = decode_output(&packet).unwrap();
+            assert_eq!((stop.left_motor, stop.right_motor), (0, 0));
+            packet[0] = 1;
+            assert_eq!(decode_output(&packet), Err(XusbError::DeviceIndex));
+        }
+        for length in [0, 4, 6, 7, 8, 10] {
+            assert_eq!(decode_output(&[0; 10][..length]), Err(XusbError::Length));
+        }
     }
     #[test]
     fn battery_uses_two_byte_header_and_legacy_state_is_twenty_bytes() {

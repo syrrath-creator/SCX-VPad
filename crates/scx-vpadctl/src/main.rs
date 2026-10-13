@@ -102,6 +102,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             for pad in &mut pads {
                 pad.neutral()?;
+                if let Ok(counters) = pad.consumer_diagnostics() {
+                    println!("I/O counters {:x?}", counters);
+                }
             }
             println!("Released all demo devices.");
         }

@@ -32,7 +32,7 @@ int main(int argc, char **argv)
     SDL_JoystickID ids[16] = {0};
     SAMPLE previous[16] = {0};
     bool first[16] = {0};
-    unsigned opened = 0, seconds = 10, all = 0;
+    unsigned opened = 0, seconds = 10, all = 0, rumble = 0;
     ULONGLONG deadline;
     int count = 0, index;
     SDL_JoystickID *available;
@@ -40,7 +40,8 @@ int main(int argc, char **argv)
         if (!strcmp(argv[index], "--seconds") && index + 1 < argc)
             seconds = (unsigned)strtoul(argv[++index], NULL, 10);
         else if (!strcmp(argv[index], "--all")) all = 1;
-        else { fprintf(stderr, "Usage: sdl_probe [--seconds 0..60] [--all]\n"); return 2; }
+        else if (!strcmp(argv[index], "--rumble-scx")) rumble = 1;
+        else { fprintf(stderr, "Usage: sdl_probe [--seconds 0..60] [--all] [--rumble-scx]\n"); return 2; }
     }
     if (seconds > 60) return 2;
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -58,7 +59,11 @@ int main(int argc, char **argv)
         SDL_Gamepad *pad;
         printf("{\"event\":\"detected\",\"id\":%u,\"name\":", id); quoted(name);
         printf(",\"path\":"); quoted(path); puts("}");
-        if ((!all && (!name || !strstr(name, "SCX"))) || opened == 16) continue;
+        if (rumble) {
+            /* Only SCX's explicit virtual HID paths, never a physical pad. */
+            if (!path || (!strstr(path,"HID#SCXVPAD&") && !strstr(path,"hid#scxvpad&"))) continue;
+        } else if (!all && (!name || !strstr(name, "SCX"))) continue;
+        if (opened == 16) continue;
         pad = SDL_OpenGamepad(id);
         if (!pad) { fprintf(stderr, "Open %u failed: %s\n", id, SDL_GetError()); continue; }
         pads[opened] = pad; ids[opened] = id; first[opened] = true; ++opened;
@@ -69,6 +74,8 @@ int main(int argc, char **argv)
                SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) ? "true" : "false",
                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true) ? "true" : "false",
                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true) ? "true" : "false");
+        if (rumble) printf("{\"event\":\"rumble-start\",\"id\":%u,\"accepted\":%s}\n", id,
+            SDL_RumbleGamepad(pad, 16383, 32767, 1200) ? "true" : "false");
     }
     SDL_free(available);
     deadline = GetTickCount64() + seconds * 1000ull;
@@ -100,7 +107,10 @@ int main(int argc, char **argv)
         if (GetTickCount64() >= deadline) break;
         Sleep(8);
     } while (1);
-    for (index = 0; index < (int)opened; ++index) SDL_CloseGamepad(pads[index]);
+    for (index = 0; index < (int)opened; ++index) {
+        if (rumble) SDL_RumbleGamepad(pads[index],0,0,0);
+        SDL_CloseGamepad(pads[index]);
+    }
     SDL_Quit();
     return opened ? 0 : 1;
 }

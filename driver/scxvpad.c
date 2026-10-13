@@ -65,6 +65,7 @@ typedef struct _SCX_DEVICE {
     uint32_t AuthStage;
     uint32_t AuthError;
     uint32_t AuthRequestorMode;
+    uint32_t OutputDiagnostic[8]; /* Counts/length/flags only; no report payload. */
 } SCX_DEVICE;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(SCX_DEVICE, ScxContext)
 
@@ -283,6 +284,12 @@ static NTSTATUS ScxGetFeature(SCX_DEVICE *ctx, WDFREQUEST request, BOOLEAN input
     if (!NT_SUCCESS(status)) return status;
     id = (const uint8_t *)WdfMemoryGetBuffer(memory, &length);
     if (length < 1) return STATUS_INVALID_BUFFER_SIZE;
+    if (!input && id[0] == 0x79) {
+        uint8_t diagnostic[33] = {0x79};
+        memcpy(diagnostic + 1, ctx->OutputDiagnostic, sizeof(ctx->OutputDiagnostic));
+        return ScxCopy(request, diagnostic, sizeof(diagnostic));
+    }
+    if (!input && id[0] < 0x79) { ++ctx->OutputDiagnostic[6]; ctx->OutputDiagnostic[7] = id[0]; }
     if (!input && id[0] == 0x7c) {
         uint8_t diagnostic[17] = {0x7c,1,0,16,0};
         memcpy(diagnostic + 5, &ctx->AuthStage, 4);
@@ -314,15 +321,23 @@ static NTSTATUS ScxOutput(SCX_DEVICE *ctx, WDFREQUEST request, size_t reportId)
     uint8_t next[33];
     uint32_t incomingFields, combinedFields, sequence;
     NTSTATUS status;
+    uint32_t decodedStatus;
     if (!ctx->Online) return STATUS_DEVICE_NOT_READY;
     status = WdfRequestRetrieveInputMemory(request, &memory);
     if (!NT_SUCCESS(status)) return status;
     bytes = (const uint8_t *)WdfMemoryGetBuffer(memory, &length);
+    ++ctx->OutputDiagnostic[0];
+    ctx->OutputDiagnostic[2] = (uint32_t)length;
+    ctx->OutputDiagnostic[3] = (uint32_t)reportId;
+    ctx->OutputDiagnostic[4] = (length > 1 ? bytes[1] : 0) | (length > 2 ? ((uint32_t)bytes[2] << 8) : 0) | (length > 39 ? ((uint32_t)bytes[39] << 16) : 0);
     if (length == 0 || reportId > 255 || bytes[0] != (uint8_t)reportId)
         return STATUS_INVALID_PARAMETER;
-    if (scx_vpad_parse_output_for_profile(ctx->Profile, bytes, length,
-                                          decoded, sizeof(decoded)) != 0)
+    decodedStatus = scx_vpad_parse_output_for_profile(ctx->Profile, bytes, length,
+                                          decoded, sizeof(decoded));
+    ctx->OutputDiagnostic[5] = decodedStatus;
+    if (decodedStatus != 0)
         return STATUS_NOT_SUPPORTED;
+    ++ctx->OutputDiagnostic[1];
     memcpy(next, ctx->Feedback, sizeof(next));
     memcpy(&incomingFields, decoded + 8, sizeof(incomingFields));
     memcpy(&combinedFields, next + 9, sizeof(combinedFields));
@@ -350,7 +365,7 @@ static NTSTATUS ScxOutput(SCX_DEVICE *ctx, WDFREQUEST request, size_t reportId)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS ScxString(WDFREQUEST request)
+static NTSTATUS ScxString(SCX_DEVICE *ctx, WDFREQUEST request)
 {
     WDFMEMORY memory;
     size_t length;
@@ -364,7 +379,9 @@ static NTSTATUS ScxString(WDFREQUEST request)
     memcpy(&selector, selectorBuffer, sizeof(selector));
     switch (selector & 0xffffu) {
     case HID_STRING_ID_IMANUFACTURER: text = L"SCX"; break;
-    case HID_STRING_ID_IPRODUCT: text = L"SCX Virtual Gamepad"; break;
+    case HID_STRING_ID_IPRODUCT:
+        text = ctx->Profile == 3 ? L"SCX DualShock 4" : ctx->Profile == 4 ? L"SCX DualSense" : L"SCX Virtual Gamepad";
+        break;
     /* Instance identity is supplied by the service's unique PnP instance ID;
      * no misleading shared serial number across simultaneous controllers. */
     case HID_STRING_ID_ISERIALNUMBER: text = L""; break;
@@ -414,7 +431,7 @@ void ScxIoControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength,
     case IOCTL_UMDF_HID_SET_OUTPUT_REPORT:
         status = ScxOutput(ctx, request, outLength); break;
     case IOCTL_HID_GET_STRING:
-        status = ScxString(request); break;
+        status = ScxString(ctx, request); break;
     case IOCTL_HID_ACTIVATE_DEVICE:
         ctx->Online = TRUE;
         WdfIoQueueStart(ctx->Reads);

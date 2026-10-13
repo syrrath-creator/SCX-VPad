@@ -232,6 +232,16 @@ pub fn parse_output(profile: Profile, report: &[u8]) -> Result<Feedback, Validat
                 feedback.valid |= FEEDBACK_RUMBLE;
                 feedback.right_motor = u16::from(report[3]) * 257;
                 feedback.left_motor = u16::from(report[4]) * 257;
+            } else if report[1] == 0
+                && report[2] == 0
+                && report[39] == 0
+                && report[3] == 0
+                && report[4] == 0
+            {
+                // SDL's empty effects packet restores audio haptics and stops
+                // emulated rumble. Do not keep the previous motor snapshot.
+                // Updates explicitly selecting other fields keep merge rules.
+                feedback.valid |= FEEDBACK_RUMBLE;
             }
             if report[2] & 4 != 0 {
                 feedback.valid |= FEEDBACK_RGB;
@@ -382,7 +392,8 @@ const fn build_descriptor(ds5: bool) -> Descriptor {
     d.append(&[
         0xc0, 0x06, 0x53, 0xff, 0x09, 1, 0xa1, 1, 0x85, 0x7a, 0x09, 2, 0x15, 0, 0x26, 0xff, 0,
         0x75, 8, 0x95, 96, 0xb1, 2, 0x85, 0x7f, 0x09, 3, 0x95, 32, 0xb1, 2, 0x85, 0x7d, 0x09, 4,
-        0x95, 32, 0xb1, 2, 0x09, 4, 0x81, 2, 0x85, 0x7c, 0x09, 5, 0x95, 16, 0xb1, 2, 0xc0,
+        0x95, 32, 0xb1, 2, 0x09, 4, 0x81, 2, 0x85, 0x7c, 0x09, 5, 0x95, 16, 0xb1, 2, 0x85, 0x79,
+        0x09, 6, 0x95, 32, 0xb1, 2, 0xc0,
     ])
 }
 static DS4_DESCRIPTOR: Descriptor = build_descriptor(false);
@@ -642,6 +653,24 @@ mod tests {
         assert_eq!(latest.left_motor, 65535);
         assert_eq!(latest.sequence, 2);
         assert_eq!(Feedback::decode(&latest.encode()), Ok(latest));
+    }
+    #[test]
+    fn dualsense_empty_effects_stop_emulated_rumble() {
+        let mut packet = [0; 63];
+        packet[0] = 2;
+        packet[1] = 3;
+        packet[3] = 63;
+        packet[4] = 31;
+        let mut state = Feedback::empty(Profile::DualSense);
+        state
+            .merge(parse_output(Profile::DualSense, &packet).unwrap())
+            .unwrap();
+        assert_ne!(state.left_motor, 0);
+        packet[1..].fill(0);
+        let stop = parse_output(Profile::DualSense, &packet).unwrap();
+        assert_eq!(stop.valid, FEEDBACK_RUMBLE);
+        state.merge(stop).unwrap();
+        assert_eq!((state.left_motor, state.right_motor), (0, 0));
     }
     #[test]
     fn outputs_reject_wrong_lengths_ids_audio_and_adaptive_requests() {

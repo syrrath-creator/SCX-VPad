@@ -1,5 +1,67 @@
 # Windows validation record
 
+## Revision 0.1.0.18 — DualSense rumble stop
+
+The independent SDL consumer exposed an additional bug: SDL restores audio
+haptics using an empty DualSense effects packet. The previous parser accepted
+it without clearing saved emulated-rumble amplitudes. Empty motor/effect flags
+now explicitly stop emulated rumble; updates selecting other fields retain
+their field-merge behavior. A new regression test covers start -> empty stop.
+
+59 Rust tests, Clippy (warnings denied), native static analysis/ABI, both INFs
+and catalog validation pass. On the installed .18 driver, SDL 3.4.18 produces
+nonzero feedback and a subsequent 0/0 stop for both Sony profiles. Five DualSense
+output reports and three DS4 reports are received and all accepted. The Xbox
+changes are unchanged from .17; the foreground WGI rumble evidence below applies
+to that unchanged path. The final Gears retest is still required.
+
+## Revision 0.1.0.17 — WGI discovery/input and output compatibility
+
+Follow-up on the same Windows development PC, 2026-10-13. User confirmed the
+0.1.0.8 Sony input fix in Gears, but reported Xbox labels for Sony, missing Sony
+game rumble, and no button input when selecting Xbox output. Steam was closed.
+
+Reproduced and isolated at the Windows API boundary:
+
+- System-class Xbox devices were absent from WGI despite working via XInput.
+  XnaComposite registration admits exactly one WGI Gamepad/RawGameController.
+- Windows issues four-byte WAIT_INPUT requests: 02 01 00 02 then 02 01 00 03.
+  Rejecting them stopped input. The corrected path receives changing button A
+  states and nonzero, advancing WGI timestamps. Public async regression checks
+  pass for separate readers, release, cancellation, bounds, denied producer
+  access, idle, watchdog, removal, and the neutral mode-2-to-mode-3 transition.
+- The mode transition must deliver a fresh snapshot for Windows' active sink;
+  without it, a neutral-only fixture never receives WGI rumble requests.
+- WGI's SET_STATE envelope has nine bytes, versus XInput's five. The previously
+  rejected nine-byte command is now bounded and decoded using the common
+  five-byte motor/LED prefix; the extension is not advertised as extra support.
+- Sony child hardware IDs now contain the complete VID_054C&PID_09CC or
+  VID_054C&PID_0CE6 identity. WGI reports PlayStation button labels 43/44/45/46
+  (Cross/Circle/Square/Triangle), independently from logical Gamepad A/B/X/Y.
+
+58 Rust tests pass, including the new extended-output test. Native static
+analysis, ABI, both INF validations and catalog signability pass. These checks
+do not replace the outstanding in-game identification/rumble retest. The direct
+HID Sony rumble path and WGI Gamepad.Vibration are separate test cases: API
+acceptance alone is never counted as successful feedback delivery.
+
+Installed 0.1.0.17 regression results:
+
+- 58 Windows HidP semantic cases pass; the independent WGI Sony verifier passes
+  both profiles, with 1,976 samples and complete button/hat/axis coverage.
+- Generic four-device isolation, watchdog/release/removal, Sony HID feedback and
+  XInput feedback/stop checks pass. Mapping recovery and all seven installer
+  recovery/security cases pass under Windows PowerShell 5.1.
+- Foreground WGI Gamepad.Vibration(0.25, 0.5) produces three Xbox feedback pairs
+  16448/32896, each followed by 0/0. These are the expected rounded 8-bit motor
+  values expanded to 16 bits. This is driver feedback verification, not a
+  measurement of a physical motor or end-to-end input latency.
+- SDL 3.4.18 identifies the owned virtual devices as PS4 and DualSense, opens
+  their native HID paths, and its rumble requests produce nonzero SCX feedback.
+- WGI's generic Sony Gamepad.Vibration calls still produce no HID output writes.
+  Native Sony HID/SDL feedback is a different, verified path. Whether Gears
+  now selects that path and presents Sony glyphs remains a user/game retest.
+
 ## Revision 0.1.0.8 — Sony mapping regression
 
 Reported with Steam Controller -> DualShock 4 / DualSense, SCX VPad, Steam
@@ -38,8 +100,9 @@ Installed-driver verification completed on 2026-10-13:
   Sony feature/rumble/RGB feedback, and Microsoft XInput state/rumble/stop
   regression checks all pass.
 
-The user's in-game Gears retest remains pending. No universal game compatibility
-claim is inferred from these Windows API tests.
+The user subsequently confirmed corrected DS4/DualSense inputs in Gears; the
+remaining identity/rumble/Xbox issues are tracked in the newer record above.
+No universal game compatibility claim is inferred from these Windows API tests.
 
 Development validation on 2026-10-13, Windows 11 x64 build 26300. Secure Boot
 remained enabled. No test-signing, signature-enforcement, Memory Integrity or

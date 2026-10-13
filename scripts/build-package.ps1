@@ -44,7 +44,7 @@ foreach ($item in $files.GetEnumerator()) {
     Copy-Item -LiteralPath $source -Destination $target
     $manifest += [ordered]@{ path=$item.Key; bytes=(Get-Item -LiteralPath $target).Length; sha256=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash }
 }
-[ordered]@{ product='SCX-VPad'; version='0.1.0'; driverVersion='0.1.0.8'; platform='windows-x64'; minimumBuild=22000; files=$manifest } |
+[ordered]@{ product='SCX-VPad'; version='0.1.0'; driverVersion='0.1.0.18'; platform='windows-x64'; minimumBuild=22000; files=$manifest } |
     ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Destination 'package-manifest.json') -Encoding utf8
 Write-Output "Packaged unsigned development binaries: $Destination"
 Write-Output 'The package is signed locally by its explicit administrative installer. No private key is distributed.'

@@ -1,4 +1,20 @@
-# 0.1.0-preview.2 — Sony control mapping fix (native revision 0.1.0.8)
+# 0.1.0-preview.2 — Windows controller compatibility (native revision 0.1.0.18)
+
+- Admit the Xbox function device through Windows' Xbox setup class. Provide
+  asynchronous Windows Gaming Input reports, including discovery/active-sink
+  transitions. Input wakes consumers on changes, with no continuous idle pump.
+- Support the observed four-byte WGI input requests and nine-byte WGI output
+  commands alongside the existing XInput formats. Keep producer access separate.
+- Publish complete Sony vendor/product hardware IDs and PlayStation button
+  labels, with journaled installation/removal of the label mappings.
+- Stop DualSense emulated rumble when SDL sends an empty effects packet;
+  verify nonzero rumble and stop through SDL for both native Sony profiles.
+- Add opt-in native WGI inventory/rumble diagnostics and independent async-input
+  regression tests for idle, cancellation, watchdog, multiple readers and removal.
+
+The earlier 0.1.0.8 input correction below was confirmed in Gears by the user.
+Sony identification and in-game rumble in Gears still require a new retest.
+Windows API results are tracked separately in VALIDATION.md.
 
 - Correct Sony HID semantics: X/Y and Z/Rz describe the sticks, Rx/Ry describe
   the independent triggers. Previously descriptor-based consumers interpreted
@@ -14,7 +30,7 @@
   Close SCX and games, uninstall the previous preview, then install this package.
   The installer needs UAC; ordinary controller connections remain unelevated.
 
-This fixes reproduced Windows API failures. Game-by-game confirmation is recorded
+This addresses reproduced Windows API failures. Game-by-game confirmation is recorded
 in VALIDATION; it is not a claim that every game supports native Sony controllers.
 
 # 0.1.0-preview.1
