@@ -76,8 +76,19 @@ a file-hash manifest. It does not install anything or modify Windows trust.
 
 ## Install and exercise a development build
 
-Run `installer/Install.ps1` from a complete generated package as the intended
-interactive user. The script requests administrative elevation once and carries
+Download the Windows x64 ZIP from [Releases](https://github.com/syrrath-creator/SCX-VPad/releases)
+and compare its SHA256 with the accompanying checksum file. For a downloaded
+ZIP, review its source and use Windows **Properties → Unblock** before extracting
+if Windows marks the unsigned development scripts as downloaded. Do not weaken
+machine-wide execution policy. Open 64-bit Windows PowerShell in the extracted
+package and run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\installer\Install.ps1
+```
+
+Run this as the intended interactive user. The script requests administrative
+elevation once and carries
 that user's SID into the service configuration. Initial setup authorizes one
 local/domain/MS-account Windows user; changing that owner is administrative.
 It installs only SCX VPad under
@@ -89,6 +100,8 @@ SYSTEM. Installation failures are recorded under `Program Files\SCX VPad\logs`.
 Copy a failure log before uninstalling; removal deletes that installation folder.
 Use the packaged `installer/Uninstall.ps1` for removal. Driver/service upgrades
 remain administrative operations; ordinary controller connections do not.
+The installed removal script is also retained under
+`C:\Program Files\SCX VPad\installer\Uninstall.ps1`.
 
 ```powershell
 ./bin/scx-vpadctl.exe status

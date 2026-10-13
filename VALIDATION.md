@@ -45,6 +45,13 @@ anti-cheat settings were changed. This is not Microsoft certification.
   mutually distrustful applications running as the authorized owner.
 - Seven installer recovery/security regression cases execute in real Windows
   PowerShell 5.1.26100.9549, including partial-staging journal recovery.
+- A forced termination of the verified SCX VPad service removes four live
+  generic devices. Four orphan bootstrap keys remain after the crash and are
+  removed on service restart. Subsequent normal-user generic self-test and
+  generic/Xbox security checks pass; no test devices remain.
+- GitHub-hosted Windows and Linux Rust checks pass, including formatting,
+  tests and Clippy. The separate GitHub Windows native driver build passes
+  static analysis, ABI checks, both INF validations and catalog generation.
 
 Protocol tests, native C/Rust ABI checks, MSVC static analysis, Microsoft's
 InfVerif and Inf2Cat are separate checks, not substitutes for these live tests.
