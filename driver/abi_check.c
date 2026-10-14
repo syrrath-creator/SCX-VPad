@@ -100,13 +100,22 @@ int main(void)
             CHECK(feature[1] == 123 && feature[6] == 2);
             CHECK(scx_vpad_feature_report_for_profile(profile, 0xff, 123,
                        feature, sizeof(feature), &featureLength) != 0);
+            CHECK(scx_vpad_validate_configuration_feature(profile, profile == 3 ? 0x14 : 8,
+                       profile == 3 ? 17 : 48) == SCX_VPAD_OK);
+            CHECK(scx_vpad_validate_configuration_feature(profile, profile == 3 ? 0x14 : 8,
+                       97) == SCX_VPAD_INVALID_LENGTH);
+            CHECK(scx_vpad_validate_configuration_feature(profile, 0x7a, 97) == SCX_VPAD_UNSUPPORTED);
         }
         CHECK(scx_vpad_profile_report_size(2) == 0);
         raw[3] = 10; raw[4] = 20;
         CHECK(scx_vpad_parse_output_for_profile(4, raw, sizeof(raw), feedback, sizeof(feedback)) == 0);
         CHECK(feedback[8] == 1 && feedback[12] == 20 && feedback[13] == 20);
-        raw[1] = 0x04; /* Adaptive-trigger output is deliberately unsupported. */
-        CHECK(scx_vpad_parse_output_for_profile(4, raw, sizeof(raw), feedback, sizeof(feedback)) != 0);
+        raw[1] = 0x04; /* No trigger engine: accept but do not invent feedback. */
+        CHECK(scx_vpad_parse_output_for_profile(4, raw, sizeof(raw), feedback, sizeof(feedback)) == 0);
+        CHECK(feedback[8] == 0);
+        raw[1] = 0x0d; raw[2] = 0x17; /* Mixed native-game initialization. */
+        CHECK(scx_vpad_parse_output_for_profile(4, raw, 48, feedback, sizeof(feedback)) == 0);
+        CHECK(feedback[8] == 15 && feedback[12] == 20 && feedback[14] == 10);
     }
     {
         uint8_t request[3] = {3,1,0};

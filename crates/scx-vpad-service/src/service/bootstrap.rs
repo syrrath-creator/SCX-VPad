@@ -128,9 +128,10 @@ pub(super) struct Bootstrap {
     pub(super) capability: Capability,
     root: Key,
     key: Option<Key>,
+    _channel: Option<scx_vpad_client::channel::Channel>,
 }
 impl Bootstrap {
-    pub(super) fn create() -> io::Result<Self> {
+    pub(super) fn create(owner: &str, profile: scx_vpad_protocol::Profile) -> io::Result<Self> {
         let mut public = [0u8; 16];
         random(&mut public)?;
         let id: String = public.iter().map(|b| format!("{b:02x}")).collect();
@@ -170,11 +171,32 @@ impl Bootstrap {
         if disposition != REG_CREATED_NEW_KEY {
             return Err(fail("bootstrap identifier collision"));
         }
+        let channel = if matches!(
+            profile,
+            scx_vpad_protocol::Profile::DualShock4 | scx_vpad_protocol::Profile::DualSense
+        ) {
+            let channel_sd = SecurityDescriptor::new(&format!(
+                "O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;UD)(A;;GA;;;{owner})S:(ML;;NW;;;ME)"
+            ))?;
+            let channel_sa = SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: channel_sd.0,
+                bInheritHandle: 0,
+            };
+            Some(scx_vpad_client::channel::Channel::create(
+                &id,
+                &channel_sa,
+                profile,
+            )?)
+        } else {
+            None
+        };
         let entry = Self {
             id,
             capability,
             root,
             key: Some(key),
+            _channel: channel,
         };
         result(unsafe {
             RegSetValueExW(

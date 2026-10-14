@@ -27,12 +27,15 @@ impl Drop for Local {
     }
 }
 pub(crate) fn descriptor(handle: &Handle) -> io::Result<String> {
+    descriptor_kind(handle, SE_FILE_OBJECT)
+}
+fn descriptor_kind(handle: &Handle, object_kind: SE_OBJECT_TYPE) -> io::Result<String> {
     let flags = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
     let mut sd = ptr::null_mut();
     let status = unsafe {
         GetSecurityInfo(
             handle.0,
-            SE_FILE_OBJECT,
+            object_kind,
             flags,
             ptr::null_mut(),
             ptr::null_mut(),
@@ -172,6 +175,7 @@ pub(crate) fn low_integrity_writer_denied(path: &str, xusb: bool) -> io::Result<
 }
 
 fn probe_writer_denied(path: &str, xusb: bool, restricted: &Handle) -> io::Result<()> {
+    let channel = path.starts_with(r"Global\SCX.VPad.");
     let path = wide(path);
     check(unsafe { ImpersonateLoggedOnUser(restricted.0) })?;
     struct Revert;
@@ -207,6 +211,23 @@ fn probe_writer_denied(path: &str, xusb: bool, restricted: &Handle) -> io::Resul
                 "SECURITY FAILURE: untrusted token opened the lease pipe",
             ))
         }
+    }
+    if channel {
+        let opened = Handle::new(unsafe {
+            windows_sys::Win32::System::Memory::OpenFileMappingW(
+                windows_sys::Win32::System::Memory::FILE_MAP_WRITE,
+                0,
+                path.as_ptr(),
+            )
+        });
+        drop(guard);
+        return match opened {
+            Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => Ok(()),
+            Err(e) => Err(e),
+            Ok(_) => Err(fail(
+                "SECURITY FAILURE: restricted token opened channel for writing",
+            )),
+        };
     }
     let opened = Handle::new(unsafe {
         CreateFileW(
@@ -308,4 +329,11 @@ pub(crate) fn bootstrap_unreadable(instance: &str) -> io::Result<()> {
         ));
     }
     Err(io::Error::from_raw_os_error(code as i32))
+}
+
+pub(crate) fn channel_descriptor(name: &str) -> io::Result<String> {
+    let h = Handle::new(unsafe {
+        windows_sys::Win32::System::Memory::OpenFileMappingW(READ_CONTROL, 0, wide(name).as_ptr())
+    })?;
+    descriptor_kind(&h, SE_KERNEL_OBJECT)
 }

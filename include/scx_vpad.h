@@ -92,6 +92,9 @@ uint32_t scx_vpad_get_hid_attributes(uint32_t profile, uint16_t *vendor,
 /* Feature output includes report ID; no unknown feature silently succeeds. */
 uint32_t scx_vpad_feature_report_for_profile(uint32_t profile, uint8_t report_id,
     uint64_t instance_id, uint8_t *output, size_t capacity, size_t *output_length);
+/* Sony radio configuration only: DS4 0x14/17 bytes, DS5 0x08/48 bytes (ID included).
+ * Pure validation, no state mutation or producer authorization. */
+uint32_t scx_vpad_validate_configuration_feature(uint32_t profile, uint8_t report_id, size_t length);
 /* Output report includes its ID. Feedback32 layout:
  * u16 version@0,size@2; u32 sequence@4 (driver assigns), valid-fields@8;
  * u16 leftmotor@12,rightmotor@14; u8 RGB@16..18,player@19,mic@20,

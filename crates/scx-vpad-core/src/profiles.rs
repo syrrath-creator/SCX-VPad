@@ -1,5 +1,5 @@
-//! Original experimental USB-profile codecs. These are new encoders and newly
-//! synthesized descriptors, not copies of physical device descriptors or drivers.
+//! Original USB-profile encoders with MIT-attributed Sony compatibility tables.
+//! The public Sony descriptors are byte-exact, with no private HID collections.
 //! Report field positions are interoperability facts published in Sony's Linux
 //! hid-playstation driver and SDL's HIDAPI PS4/PS5 implementations. See PROVENANCE.md.
 //! Hardware/game compatibility remains subject to live integration testing.
@@ -114,6 +114,9 @@ fn contact(report: &mut [u8], state: &InputState, index: usize, height: u32) {
     report[3] = (y >> 4) as u8;
 }
 
+#[path = "sony_compat.rs"]
+mod sony_compat;
+
 /// Synthetic, internally consistent motion calibration (zero bias, 16 gyro units
 /// per degree/s, 8192 acceleration units/g). This is not captured Sony firmware.
 pub fn feature(profile: Profile, report_id: u8, instance_id: u64) -> Option<([u8; 64], usize)> {
@@ -156,22 +159,15 @@ pub fn feature(profile: Profile, report_id: u8, instance_id: u64) -> Option<([u8
             ))
         }
         (Profile::DualShock4, 0xa3) => {
-            r[1..12].copy_from_slice(b"Oct 13 2026");
-            r[12..20].copy_from_slice(b"00:00:00");
-            signed(&mut r, 35, 1);
-            signed(&mut r, 41, 0x0100);
+            r[..49].copy_from_slice(sony_compat::DS4_FIRMWARE_INFO);
             Some((r, 49))
         }
         (Profile::DualSense, 0x20) => {
-            r[1..12].copy_from_slice(b"Oct 13 2026");
-            r[12..20].copy_from_slice(b"00:00:00");
-            r[24..28].copy_from_slice(&1u32.to_le_bytes());
-            r[28..32].copy_from_slice(&0x100u32.to_le_bytes());
-            // Deliberately identifies the baseline feature level rather than
-            // claiming newer adaptive/audio capabilities we have not implemented.
-            signed(&mut r, 44, 0x0100);
+            r.copy_from_slice(sony_compat::DS5_FIRMWARE_INFO);
             Some((r, 64))
         }
+        // A zero patch version is the valid "no Bluetooth patch" response.
+        (Profile::DualSense, 0x22) => Some((r, 64)),
         _ => None,
     }
 }
@@ -188,8 +184,8 @@ pub fn attributes(profile: Profile) -> Option<(u16, u16, u16)> {
     }
 }
 
-/// Supported USB output controls only. Audio streams/adaptive trigger programs
-/// are rejected rather than silently acknowledged as if implemented.
+/// Decode supported USB output controls. Audio/adaptive fields in mixed packets
+/// are ignored; they are not represented as implemented in the feedback ABI.
 pub fn parse_output(profile: Profile, report: &[u8]) -> Result<Feedback, ValidationError> {
     let mut feedback = Feedback::empty(profile);
     match profile {
@@ -200,9 +196,9 @@ pub fn parse_output(profile: Profile, report: &[u8]) -> Result<Feedback, Validat
             if report[0] != 5 {
                 return Err(ValidationError::Magic);
             }
-            if report[1] & !7 != 0 || report[2] != 0 {
-                return Err(ValidationError::Flags);
-            }
+            // Public Sony reports can combine supported rumble/LED controls
+            // with audio and hardware-only flags. Ignore those fields rather
+            // than rejecting the entire fixed-size packet during game init.
             if report[1] & 1 != 0 {
                 feedback.valid |= FEEDBACK_RUMBLE;
                 feedback.right_motor = u16::from(report[4]) * 257;
@@ -219,15 +215,19 @@ pub fn parse_output(profile: Profile, report: &[u8]) -> Result<Feedback, Validat
             }
         }
         Profile::DualSense => {
-            if report.len() != 63 {
+            // The HID report is 48 bytes. USB clients may pad it to the
+            // 63-byte wire packet; every supported field fits in the first 48.
+            if !matches!(report.len(), 48 | 63) {
                 return Err(ValidationError::Length);
             }
             if report[0] != 2 {
                 return Err(ValidationError::Magic);
             }
-            if report[1] & !3 != 0 || report[2] & !0x1d != 0 || report[39] & !6 != 0 {
-                return Err(ValidationError::Flags);
-            }
+            // Gears initializes with 0x0d/0x17: rumble, both adaptive triggers,
+            // power control and LEDs in the same packet. The virtual pad has
+            // no audio/trigger engine. Ignore unsupported fields, but still
+            // apply the supported fields and acknowledge the complete report.
+            // Exact length/ID checks above keep every offset bounded.
             if report[1] & 3 != 0 || report[39] & 4 != 0 {
                 feedback.valid |= FEEDBACK_RUMBLE;
                 feedback.right_motor = u16::from(report[3]) * 257;
@@ -261,148 +261,11 @@ pub fn parse_output(profile: Profile, report: &[u8]) -> Result<Feedback, Validat
     Ok(feedback)
 }
 
-struct Descriptor {
-    bytes: [u8; 384],
-    length: usize,
-}
-impl Descriptor {
-    const fn new() -> Self {
-        Self {
-            bytes: [0; 384],
-            length: 0,
-        }
-    }
-    const fn append(mut self, bytes: &[u8]) -> Self {
-        let mut i = 0;
-        while i < bytes.len() {
-            self.bytes[self.length] = bytes[i];
-            self.length += 1;
-            i += 1;
-        }
-        self
-    }
-    const fn feature(self, id: u8, count: u8) -> Self {
-        self.append(&[0x85, id, 0x09, id, 0x75, 8, 0x95, count, 0xb1, 2])
-    }
-}
-const fn build_descriptor(ds5: bool) -> Descriptor {
-    // Sony USB reports use X/Y and Z/Rz for the two sticks; Rx/Ry are
-    // independent triggers. Raw-byte consumers hide mistakes here, but HID
-    // consumers (including Windows Gaming Input) follow these usages.
-    let mut d = Descriptor::new().append(&[
-        0x05, 1, 0x09, 5, 0xa1, 1, 0x85, 1, 0x15, 0, 0x26, 0xff, 0, 0x75, 8, 0x95, 4, 0x09, 0x30,
-        0x09, 0x31, 0x09, 0x32, 0x09, 0x35, 0x81, 2,
-    ]);
-    if ds5 {
-        d = d.append(&[
-            0x09, 0x33, 0x09, 0x34, 0x95, 2, 0x81, 2, 0x06, 0x53, 0xff, 0x09, 0x10, 0x95, 1, 0x81,
-            2, 0x05, 1,
-        ]);
-    }
-    d = d.append(&[
-        0x09,
-        0x39,
-        0x15,
-        0,
-        0x25,
-        7,
-        0x35,
-        0,
-        0x46,
-        0x3b,
-        1,
-        0x65,
-        0x14,
-        0x75,
-        4,
-        0x95,
-        1,
-        0x81,
-        0x42,
-        0x65,
-        0,
-        0x35,
-        0,
-        0x45,
-        0,
-        0x05,
-        9,
-        0x19,
-        1,
-        0x29,
-        if ds5 { 15 } else { 14 },
-        0x15,
-        0,
-        0x25,
-        1,
-        0x75,
-        1,
-        0x95,
-        if ds5 { 15 } else { 14 },
-        0x81,
-        2,
-        0x06,
-        0x53,
-        0xff,
-        0x09,
-        0x11,
-        0x75,
-        1,
-        0x95,
-        if ds5 { 13 } else { 6 },
-        0x81,
-        2,
-    ]);
-    if !ds5 {
-        d = d.append(&[
-            0x05, 1, 0x09, 0x33, 0x09, 0x34, 0x15, 0, 0x26, 0xff, 0, 0x75, 8, 0x95, 2, 0x81, 2,
-        ]);
-    }
-    d = d.append(&[
-        0x06,
-        0x53,
-        0xff,
-        0x09,
-        0x12,
-        0x15,
-        0,
-        0x26,
-        0xff,
-        0,
-        0x75,
-        8,
-        0x95,
-        if ds5 { 52 } else { 54 },
-        0x81,
-        2,
-        0x85,
-        if ds5 { 2 } else { 5 },
-        0x09,
-        0x13,
-        0x95,
-        if ds5 { 62 } else { 31 },
-        0x91,
-        2,
-    ]);
-    if ds5 {
-        d = d.feature(5, 40).feature(9, 19).feature(0x20, 63);
-    } else {
-        d = d.feature(2, 36).feature(0x12, 15).feature(0xa3, 48);
-    }
-    d.append(&[
-        0xc0, 0x06, 0x53, 0xff, 0x09, 1, 0xa1, 1, 0x85, 0x7a, 0x09, 2, 0x15, 0, 0x26, 0xff, 0,
-        0x75, 8, 0x95, 96, 0xb1, 2, 0x85, 0x7f, 0x09, 3, 0x95, 32, 0xb1, 2, 0x85, 0x7d, 0x09, 4,
-        0x95, 32, 0xb1, 2, 0x09, 4, 0x81, 2, 0x85, 0x7c, 0x09, 5, 0x95, 16, 0xb1, 2, 0x85, 0x79,
-        0x09, 6, 0x95, 32, 0xb1, 2, 0xc0,
-    ])
-}
-static DS4_DESCRIPTOR: Descriptor = build_descriptor(false);
-static DS5_DESCRIPTOR: Descriptor = build_descriptor(true);
 pub fn descriptor(profile: Profile) -> Option<&'static [u8]> {
     match profile {
         Profile::GenericHid => Some(super::REPORT_DESCRIPTOR),
-        Profile::DualShock4 => Some(&DS4_DESCRIPTOR.bytes[..DS4_DESCRIPTOR.length]),
-        Profile::DualSense => Some(&DS5_DESCRIPTOR.bytes[..DS5_DESCRIPTOR.length]),
+        Profile::DualShock4 => Some(sony_compat::DS4_USB_DESCRIPTOR),
+        Profile::DualSense => Some(sony_compat::DS5_USB_DESCRIPTOR),
         _ => None,
     }
 }
@@ -575,6 +438,24 @@ mod tests {
         assert!(encode(Profile::Xbox360, &InputState::NEUTRAL).is_none());
     }
     #[test]
+    fn sony_firmware_handshake_has_valid_types_dates_and_patch_response() {
+        let (ds5, n) = feature(Profile::DualSense, 0x20, 1).unwrap();
+        assert_eq!(n, 64);
+        assert!(matches!(u16::from_le_bytes([ds5[20], ds5[21]]), 2 | 3));
+        assert_eq!(u16::from_le_bytes([ds5[22], ds5[23]]), 4);
+        assert!(u32::from_le_bytes(ds5[24..28].try_into().unwrap()) > 777);
+        assert!(u32::from_le_bytes(ds5[28..32].try_into().unwrap()) > 65655);
+        let (patch, n) = feature(Profile::DualSense, 0x22, 1).unwrap();
+        assert_eq!(n, 64);
+        assert_eq!(patch[0], 0x22);
+        assert_eq!(&patch[1..], &[0; 63]);
+        let (ds4, n) = feature(Profile::DualShock4, 0xa3, 1).unwrap();
+        assert_eq!(n, 49);
+        assert_eq!(&ds4[17..25], b"07:01:12");
+        assert_eq!(ds4[12], 0); // DS4 date/time are padded, unlike DS5.
+    }
+
+    #[test]
     fn descriptor_report_totals_match_all_implemented_features() {
         for profile in [Profile::DualShock4, Profile::DualSense] {
             let d = descriptor(profile).unwrap();
@@ -608,15 +489,16 @@ mod tests {
                 }
             }
             assert_eq!(input[1], 504);
-            assert_eq!(features[0x7a], 768);
+            assert_eq!(features[0x7a], 0);
             assert_eq!(features[0x7e], 0);
-            assert_eq!(features[0x7f], 256);
-            assert_eq!(features[0x7c], 128);
-            assert_eq!(input[0x7d], 256); // asynchronous feedback, separate vendor TLC
+            assert_eq!(features[0x7f], 0);
+            assert_eq!(features[0x7c], 0);
+            assert_eq!(input[0x7d], 0); // no second input controller
+            assert_eq!(features[0x78], 0); // feedback is outside the public HID
             assert_eq!(
                 output[if profile == Profile::DualSense { 2 } else { 5 }],
                 if profile == Profile::DualSense {
-                    496
+                    376
                 } else {
                     248
                 }
@@ -626,6 +508,77 @@ mod tests {
                     assert_eq!(features[id as usize], (size as u32 - 1) * 8);
                 }
             }
+        }
+    }
+    #[test]
+    fn dualsense_hid_and_padded_usb_effects_match() {
+        let mut r = [0; 63];
+        r[0] = 2;
+        r[1] = 3;
+        r[2] = 4;
+        r[3] = 27;
+        r[4] = 111;
+        r[45..48].copy_from_slice(&[10, 20, 30]);
+        assert_eq!(
+            parse_output(Profile::DualSense, &r[..48]),
+            parse_output(Profile::DualSense, &r)
+        );
+        let mut native = [0; FEEDBACK_PACKET_SIZE];
+        let status = unsafe {
+            crate::profile_ffi::scx_vpad_parse_output_for_profile(
+                Profile::DualSense as u32,
+                r.as_ptr(),
+                48,
+                native.as_mut_ptr(),
+                native.len(),
+            )
+        };
+        assert_eq!(
+            status, 0,
+            "Native binding must accept the advertised HID length"
+        );
+        assert_eq!(
+            Feedback::decode(&native).unwrap(),
+            parse_output(Profile::DualSense, &r).unwrap()
+        );
+        assert_eq!(
+            parse_output(Profile::DualSense, &r[..47]),
+            Err(ValidationError::Length)
+        );
+        assert_eq!(
+            parse_output(Profile::DualSense, &r[..49]),
+            Err(ValidationError::Length)
+        );
+    }
+    #[test]
+    fn sony_device_has_exactly_one_application_collection_and_no_private_reports() {
+        for profile in [Profile::DualShock4, Profile::DualSense] {
+            let d = descriptor(profile).unwrap();
+            let mut pos = 0;
+            let mut id = 0;
+            let mut collections = 0;
+            while pos < d.len() {
+                let tag = d[pos];
+                let n = match tag & 3 {
+                    3 => 4,
+                    n => n as usize,
+                };
+                let value = if n > 0 { d[pos + 1] } else { 0 };
+                if tag & 0xfc == 0x84 {
+                    id = value;
+                }
+                if tag & 0xfc == 0x80 {
+                    assert_eq!(id, 1, "Only the gamepad may expose an input report");
+                }
+                if tag == 0xa1 && value == 1 {
+                    collections += 1;
+                }
+                if tag & 0xfc == 0xb0 {
+                    assert!(!(0x78..=0x7f).contains(&id));
+                }
+                pos += 1 + n;
+            }
+            assert_eq!(collections, 1);
         }
     }
     #[test]
@@ -673,7 +626,7 @@ mod tests {
         assert_eq!((state.left_motor, state.right_motor), (0, 0));
     }
     #[test]
-    fn outputs_reject_wrong_lengths_ids_audio_and_adaptive_requests() {
+    fn outputs_reject_wrong_lengths_and_ids_but_ignore_hardware_only_fields() {
         assert_eq!(
             parse_output(Profile::DualSense, &[0; 62]),
             Err(ValidationError::Length)
@@ -685,15 +638,9 @@ mod tests {
         );
         r[0] = 2;
         r[1] = 4;
-        assert_eq!(
-            parse_output(Profile::DualSense, &r),
-            Err(ValidationError::Flags)
-        );
+        assert_eq!(parse_output(Profile::DualSense, &r).unwrap().valid, 0);
         r[1] = 0x20;
-        assert_eq!(
-            parse_output(Profile::DualSense, &r),
-            Err(ValidationError::Flags)
-        );
+        assert_eq!(parse_output(Profile::DualSense, &r).unwrap().valid, 0);
         let mut d4 = [0; 32];
         d4[0] = 5;
         d4[1] = 7;
@@ -703,5 +650,46 @@ mod tests {
         let f = parse_output(Profile::DualShock4, &d4).unwrap();
         assert_eq!(f.valid, 19);
         assert_eq!(f.rgb, [1, 2, 3]);
+    }
+    #[test]
+    fn mixed_native_game_outputs_preserve_supported_feedback_and_stop() {
+        let mut ds5 = [0x7f; 48];
+        ds5[0] = 2;
+        ds5[1] = 0x0d; // Observed Gears flags, not a captured game payload.
+        ds5[2] = 0x17;
+        ds5[3] = 0x55;
+        ds5[4] = 0xaa;
+        ds5[9] = 1;
+        ds5[39] = 0;
+        ds5[44] = 3;
+        ds5[45..48].copy_from_slice(&[17, 34, 51]);
+        let f = parse_output(Profile::DualSense, &ds5).unwrap();
+        assert_eq!(
+            f.valid,
+            FEEDBACK_RUMBLE | FEEDBACK_RGB | FEEDBACK_PLAYER | FEEDBACK_MICROPHONE
+        );
+        assert_eq!((f.left_motor, f.right_motor), (0xaaaa, 0x5555));
+        assert_eq!(f.rgb, [17, 34, 51]);
+        assert_eq!((f.player, f.microphone), (3, 1));
+        let mut latest = Feedback::empty(Profile::DualSense);
+        latest.merge(f).unwrap();
+        ds5[3..5].fill(0);
+        latest
+            .merge(parse_output(Profile::DualSense, &ds5).unwrap())
+            .unwrap();
+        assert_eq!((latest.left_motor, latest.right_motor), (0, 0));
+        assert_eq!(latest.rgb, [17, 34, 51]);
+
+        let mut ds4 = [0x7f; 32];
+        ds4[0] = 5;
+        ds4[1] = 0xff;
+        ds4[2] = 0xff;
+        ds4[4] = 0x55;
+        ds4[5] = 0xaa;
+        ds4[6..9].copy_from_slice(&[17, 34, 51]);
+        let f = parse_output(Profile::DualShock4, &ds4).unwrap();
+        assert_eq!(f.valid, FEEDBACK_RUMBLE | FEEDBACK_RGB | FEEDBACK_BLINK);
+        assert_eq!((f.left_motor, f.right_motor), (0xaaaa, 0x5555));
+        assert_eq!(f.rgb, [17, 34, 51]);
     }
 }

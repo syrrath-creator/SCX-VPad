@@ -3,8 +3,9 @@
 An independently implemented Windows virtual-controller driver with a Rust core,
 a small UMDF2 binding, and a restricted Rust service for device management.
 
-**Development version 0.1.0.** Independently written source, not a HIDMaestro or
-ViGEmBus fork. This is an experimental driver and SDK, not a production-certified
+**Development preview 2 — native driver 0.1.0.28.** Independently implemented architecture, with
+attributed MIT Sony compatibility tables from HIDMaestro. This is an experimental
+driver and SDK, not a production-certified
 drop-in replacement. Its Windows validation and remaining compatibility gaps
 are recorded separately from protocol unit tests.
 
@@ -17,7 +18,8 @@ Normal applications communicate with the service without elevation. The service
 retains privileges only to create and remove the allowlisted SCX devices.
 
 Controller state travels directly from the native client to the UMDF2 driver,
-using a vendor HID collection or the restricted Xbox control interface. The
+using an authenticated per-device shared section for Sony, a vendor HID
+collection for generic HID, or the restricted Xbox control interface. The
 privileged service's pipe manages device lifetime, not each input packet. There is no
 network transport or fixed input polling timer. State encoding uses fixed-size
 buffers. Devices have separate queues and synchronization, bounded capacity,
@@ -45,13 +47,17 @@ explicit backpressure and stale-input neutralization.
 - Stable device identities, locally signed installation and scoped removal.
 
 Generic HID does not expose Sony or Steam features. Sony profiles have synthetic
-SCX calibration, identity and feature replies, not copied hardware firmware.
+SCX calibration and per-device identities, plus attributed Sony USB compatibility
+descriptors and firmware-information tables from HIDMaestro (see notices).
 Native USB audio, adaptive trigger effects, Bluetooth radio emulation, console
 pairing and Steam-controller output are not implemented. The generic profile has
-no rumble protocol. Revision 0.1.0.8 corrects Sony HID axis usages and installs
-explicit Windows Gaming Input mappings for its two Sony USB identities. GameInput
-shares Microsoft's mapping registry; a separate GameInput SDK/game test is still
-required. See VALIDATION for the exact tested APIs and remaining game checks.
+no rumble protocol. Revision 0.1.0.28 includes Windows Gaming Input and GameInput
+compatibility corrections, Sony initialization and mixed-output handling, plus
+ROOT-compatible Sony container metadata with distinct per-device identities.
+The tested Gears of War: E-Day setup recognizes PlayStation input and game rumble.
+Four Sony controllers (DS4, DS5 and mixed) pass independent WGI/GameInput v3 input,
+identity, rumble-isolation and partial-removal tests. See VALIDATION for scope and
+the single earlier transient that could not be reproduced in the recorded run.
 Do not assume universal game support from a protocol or enumeration test.
 
 ## Build
@@ -125,7 +131,9 @@ benchmark measures the API path; it is not physical controller-to-screen latency
 Measured submission-to-HID-read completion also excludes physical transport,
 game polling and display delay. This project makes no "fastest driver" claim.
 See [SDK.md](SDK.md) and the Rust client example for application integration.
-The existing SCX application is not switched to this backend by installation.
+SCX 2.1.2 recommends this backend. Installation does not modify application
+profiles. Update the driver, service and client together; old Sony clients from
+before native .24 are incompatible with the current private producer channel.
 Recorded results and remaining test coverage are in [VALIDATION.md](VALIDATION.md).
 
 ## License and commercial distribution
@@ -138,8 +146,8 @@ Contact **tim.haller@gmail.com**.
 
 This commercial-distribution restriction means the project is source available,
 not OSI-approved open source. Third-party components keep their own licenses.
-The driver is independently implemented; no HIDMaestro driver, SDK or device
-profile is bundled. See [security boundaries](SECURITY.md),
+The architecture is independently implemented; no HIDMaestro driver or SDK
+is bundled. Attributed MIT Sony compatibility tables are included. See [security boundaries](SECURITY.md),
 [protocol provenance](crates/scx-vpad-core/PROVENANCE.md),
 [XUSB contract](crates/scx-vpad-core/XUSB-CONTRACT.md) and third-party notices.
 

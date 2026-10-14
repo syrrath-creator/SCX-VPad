@@ -696,6 +696,23 @@ struct Device {
     context: Box<Created>,
     bootstrap: Option<bootstrap::Bootstrap>,
 }
+
+fn device_container(identity_seed: u64, profile: Profile, identity: u64) -> GUID {
+    // Match ROOT-enumerated Sony controllers. A private physical-style
+    // container caused incorrect game glyphs/duplicate navigation in the
+    // controlled Gears comparison. This sentinel is metadata, not ownership:
+    // PnP paths, public Sony identities, leases and capabilities stay unique.
+    // Four-pad HID/WGI/GameInput isolation is covered by self-test-sony-multi.
+    // Xbox must keep its real per-controller container for XInput assignment.
+    if matches!(profile, Profile::DualShock4 | Profile::DualSense) {
+        GUID::from_u128(0x00000000_0000_0000_ffff_ffffffffffff)
+    } else {
+        GUID::from_u128(
+            ((identity_seed as u128) << 64) | 0x5343580000000000u128 | (identity as u128 & 0xfff),
+        )
+    }
+}
+
 impl Drop for Device {
     fn drop(&mut self) {
         unsafe {
@@ -715,7 +732,7 @@ impl Device {
         let bootstrap = if profile == Profile::Xbox360 {
             None
         } else {
-            Some(bootstrap::Bootstrap::create()?)
+            Some(bootstrap::Bootstrap::create(owner, profile)?)
         };
         let mut bootstrap_id = bootstrap.as_ref().map(|b| wide(&b.id));
         let acl = SecurityDescriptor::new(&format!("O:SYG:SYD:P(A;;GA;;;SY)(A;;GRGW;;;{owner})"))?;
@@ -748,9 +765,7 @@ impl Device {
             _ => "SCX Virtual Gamepad",
         });
         let mut identity = device_identity(identity_seed, profile, slot);
-        let container = GUID::from_u128(
-            ((identity_seed as u128) << 64) | 0x5343580000000000u128 | (identity as u128 & 0xfff),
-        );
+        let container = device_container(identity_seed, profile, identity);
         let info = SW_DEVICE_CREATE_INFO {
             cbSize: size_of::<SW_DEVICE_CREATE_INFO>() as u32,
             pszInstanceId: id.as_ptr(),
@@ -918,6 +933,35 @@ mod tests {
                 assert_ne!(id, 0);
                 assert_eq!(id, device_identity(0x123456789abcdef0, p, s));
                 assert!(seen.insert(id));
+            }
+        }
+    }
+    #[test]
+    fn sony_uses_root_container_and_other_profiles_keep_unique_containers() {
+        let mut seen = std::collections::HashSet::new();
+        for seed in [0x123456789abcdef0, 0x9876543210fedcba] {
+            for profile in [
+                Profile::GenericHid,
+                Profile::Xbox360,
+                Profile::DualShock4,
+                Profile::DualSense,
+            ] {
+                for slot in 0..16 {
+                    let container =
+                        device_container(seed, profile, device_identity(seed, profile, slot));
+                    let key = (
+                        container.data1,
+                        container.data2,
+                        container.data3,
+                        container.data4,
+                    );
+                    if matches!(profile, Profile::DualShock4 | Profile::DualSense) {
+                        assert_eq!(key, (0, 0, 0, [0xff; 8]));
+                    } else {
+                        assert_ne!(key, (0, 0, 0, [0xff; 8]));
+                        assert!(seen.insert(key));
+                    }
+                }
             }
         }
     }

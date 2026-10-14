@@ -1,5 +1,33 @@
 # SCX original Windows binding
 
+Revision .28 uses the ROOT-enumeration sentinel container for Sony profiles,
+matching the working Maestro device policy. This does not merge ownership:
+each controller retains its own PnP path, Sony identity, lease and authenticated
+channel. Four Sony controllers remain distinct through HID, WGI and GameInput
+v3, including after removal of a sibling. Xbox/generic containers are unchanged.
+See VALIDATION.md for the Gears result and the unreproduced transient episode.
+
+Sony diagnosis can explicitly enable the ETW provider `SCX-VPad-Diagnostics`
+(`05b6b2fc-a45b-4b7c-8c94-3b2ce386b1e5`, keyword 1, informational level).
+It records requestor PID, public profile/instance identity, IOCTL/selector,
+buffer sizes, status and transferred length. It records no report payload,
+input capability, owner SID or channel name. It is disabled by default and
+does not trace per-frame READ_REPORT/GET_INPUT_REPORT. Requestor PID may refer
+to a Windows forwarding process rather than the originating game; attribution
+must be checked against live process inventory rather than assumed.
+
+Native .26 accepts DS4 feature 0x14/17 bytes and DualSense feature 0x08/48 bytes
+as configuration no-ops: there is no Bluetooth radio on these virtual USB
+endpoints. The game trace established that blanket SET_FEATURE rejection was
+aborting initialization. Report IDs and lengths are strictly checked; these
+calls cannot change producer state, identity or feedback. All other public
+feature writes remain denied. No command is forwarded to physical hardware.
+
+Native .27 processes supported fields in mixed Sony output reports even when
+audio or adaptive-trigger controls are also present. Unsupported fields are
+ignored; they do not cause the whole rumble/light command to fail. Exact report
+IDs and lengths remain checked. This does not add an audio/trigger engine.
+
 This is a new UMDF2 HID minidriver and XUSB function driver, not a HIDMaestro fork. The Rust core owns
 the fixed byte protocol, validation, HID descriptor and report encoding. This
 small C binding owns the Windows framework handles, queued requests and device
@@ -12,8 +40,9 @@ Profile 1 is an original generic HID gamepad with 32 buttons, a hat, four signed
 stick axes and two unsigned trigger axes. It is **not XInput**. Profiles 3 and 4
 implement experimental DualShock 4 and DualSense USB-compatible reports,
 synthetic calibration/identity, motion and touch fields, rumble and supported
-LED feedback. Their descriptors and encoders were newly written from published
-protocol facts, not copied from another virtual driver. They set the experimental
+LED feedback. State encoders are original; public USB descriptors and firmware
+metadata tables are adapted from MIT-licensed HIDMaestro with attribution in
+THIRD-PARTY-NOTICES.txt and licenses/HIDMaestro-MIT.txt. They set the experimental
 capability bit until device/game testing verifies compatibility. Profile 2 is
 an experimental Xbox-compatible XUSB function device whose Windows XInput discovery
 and game compatibility require a separate live validation. Steam output is not
@@ -24,7 +53,11 @@ The package currently targets x64 Windows 11, build 22000 or newer, because it
 uses the modern inbox `MsHidUmdf.inf` and `WUDFRD.inf` installation sections.
 The HID package binds `SCX\VirtualPad`; the separate XnaComposite-class INF binds
 `SCX\VirtualXbox` for XUSB. Both INFs reference one DLL and one catalog. The HID control collection uses
-the vendor-defined HID usage page `0xff53`, usage `1`. Compatibility profiles
+the vendor-defined HID usage page `0xff53`, usage `1` for generic HID only.
+Native .24 Sony profiles expose no private HID collection. Their authenticated
+input, status and feedback use a service-provisioned fixed shared section and
+blocking events; the driver validates and acknowledges every input packet.
+Compatibility profiles
 use the manufacturer/product identifiers expected by their consumers; the
 generic profile uses vendor ID zero. No physical USB device is impersonated on
 the USB bus. The service owns each unique PnP instance.
@@ -52,9 +85,15 @@ The service is not in the per-report data path. `HidD_GetFeature` report `0x7f`
 returns a 32-byte device-information block, never the secret capability.
 Callers allocate the collection's maximum feature buffer size (97 bytes), and
 the driver returns 33 meaningful
-bytes including the report ID. Sony-compatible outputs return feedback through
-vendor input report `0x7d`: the client can wait on `ReadFile` rather than poll.
-The same ID provides a feature snapshot. Output field masks are merged, so an
+bytes including the report ID. Since native revision .23, Sony feedback uses
+feature `0x78`: an overlapped, cancellable GET_FEATURE waits for pending output.
+Only the report ID reaches the UMDF input buffer; pending-event state is owned
+by the device, with one feedback stream per lease and broadcast to its currently
+queued readers. A pending change is retained until successfully delivered. The
+SDK keeps buffers alive until cancellation is drained. Feature `0x7d` still
+provides an immediate snapshot. Neither adds a second input controller. The SDK
+detects older drivers by their input-report capability and uses ReadFile there.
+Output field masks are merged, so an
 RGB update does not erase an existing rumble state. Feedback is per device and
 has a monotonic sequence. Repeated identical outputs do not wake readers.
 
@@ -62,8 +101,8 @@ Each device has independent state, sequence checks, a fixed 64-report FIFO,
 manual HID read queue, and a watchdog. Windows serializes callbacks within a
 device; different devices have no shared SCX lock. Duplicate gamepad states
 refresh liveness without waking HID readers. Different states are delivered
-in order, including quick press/release transitions. The same pipeline carries
-the feedback report; HIDClass routes it to the vendor collection. A full FIFO returns
+in order, including quick press/release transitions. A separate bounded manual
+queue services Sony feedback feature waits. A full input FIFO returns
 `STATUS_DEVICE_BUSY` without accepting the frame or consuming its sequence.
 The producer must retry/back off; silent transition loss is not success.
 
@@ -142,7 +181,7 @@ InfVerif and creates the catalog with Inf2Cat. It does not install anything,
 create certificates, alter boot options or add a trust anchor. The local
 installer is a separate explicit administrative step.
 
-## Design references (no HIDMaestro code copied)
+## Design references and compatibility data
 
 - [Microsoft: Creating WDF HID minidrivers](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/creating-umdf-hid-minidrivers)
 - [Microsoft: HID sample documentation explaining control collections](https://github.com/microsoft/Windows-driver-samples/tree/main/hid/vhidmini2)
@@ -152,7 +191,8 @@ installer is a separate explicit administrative step.
 - [Microsoft: UMDF client impersonation](https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/handling-client-impersonation-in-umdf-drivers)
 - [Microsoft: Volatile registry keys and access control](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regcreatekeyexw)
 
-The implementation and descriptor were written for SCX. Standard WDF API usage
+The Windows binding and private transport were written for SCX. Sony USB
+compatibility tables retain the upstream MIT license. Standard WDF API usage
 and inbox INF section names follow Microsoft's documented contracts. The WDK
 headers and stub library are external Microsoft build dependencies and retain
 their own terms; they are not relicensed by the SCX source license.

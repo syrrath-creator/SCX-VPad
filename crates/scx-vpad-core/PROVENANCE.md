@@ -1,8 +1,13 @@
 # Original implementation and protocol references
 
-All Rust code and descriptor-generation logic in this crate was newly written
-for SCX VPad. No HIDMaestro, ViGEmBus, Sony firmware, captured HID descriptor,
-or previously written SCX source was copied into this crate.
+The SCX transport, validation, state encoding and service are independently
+implemented. As of native revision 0.1.0.23, sony_compat.rs incorporates the
+Sony USB report descriptor and firmware-information response tables from
+HIDMaestro (MIT), revision 0c85d866cdd8e70acb63d968173b9201b2cb8bb1:
+profiles/sony/dualshock-4-v2.json, profiles/sony/dualsense.json and driver/driver.c.
+The full license is retained in licenses/HIDMaestro-MIT.txt. These are USB
+compatibility metadata, not executable or flashable Sony firmware. The tables
+remain MIT-licensed and are excluded from SCX's own redistribution restriction.
 
 The generic descriptor implements the USB HID 1.11 item format and Generic
 Desktop/Button usages: <https://www.usb.org/document-library/device-class-definition-hid-111>.
@@ -19,13 +24,15 @@ documented by these primary interoperability implementations (consulted
   <https://github.com/libsdl-org/SDL/blob/main/src/joystick/hidapi/SDL_hidapi_ps4.c>
   and <https://github.com/libsdl-org/SDL/blob/main/src/joystick/hidapi/SDL_hidapi_ps5.c>.
 
-Those projects retain their own licenses. We have not imported their functions,
-structures, control flow, comments, descriptor arrays, or firmware data.
-The experimental profiles synthesize fresh HID descriptors from the required
-report field layouts, and calibration values from our explicitly defined
-normalized units. Identity and firmware responses are synthetic SCX values,
-not extracted device data. Interoperability IDs identify the selected protocol;
-they do not imply that this software is Sony hardware or endorsed by Sony.
+Those projects retain their own licenses. No Linux or SDL implementation code
+was imported. Public Sony collections now use the byte-exact descriptors from
+the attributed Maestro profiles. The private SCX collection is feature-only,
+with a bounded cancellable feedback wait, so feedback is not a second input
+controller. Calibration remains synthesized from our normalized units and
+pairing/HID serial identities are unique per SCX device. Firmware-information
+responses use the attributed compatibility tables because invalid type/version
+fields can make native game parsers abandon the Sony handshake. Protocol IDs
+do not imply that SCX is Sony hardware or endorsed by Sony.
 
 Current boundaries: USB-style report encoding only; no Bluetooth radio,
 firmware flashing, authentication, USB audio, console pairing, or adaptive

@@ -10,6 +10,47 @@
 #include <map>
 #include <string>
 #include <cmath>
+#include <set>
+
+static int VerifySonyMulti(unsigned seconds,unsigned expected) {
+    using namespace winrt;
+    using namespace Windows::Gaming::Input;
+    if(expected<1 || expected>4) return 2;
+    const auto start=GetTickCount64();
+    unsigned consecutive=0;
+    while(GetTickCount64()-start<seconds*1000ULL) {
+        unsigned matches[4]{},sonyCount=0;
+        std::set<std::wstring> ids;
+        bool labels=true;
+        for(auto gp:Gamepad::Gamepads()) {
+            auto raw=RawGameController::FromGameController(gp);
+            if(!raw || raw.HardwareVendorId()!=0x054c ||
+               (raw.HardwareProductId()!=0x0ce6 && raw.HardwareProductId()!=0x09cc)) continue;
+            ++sonyCount;
+            const auto state=gp.GetCurrentReading();
+            for(unsigned n=0;n<expected;++n) {
+                const unsigned mask[]={4,8,16,32};
+                if(static_cast<unsigned>(state.Buttons)==mask[n] &&
+                   std::abs(state.LeftThumbstickX-((32.0+n*48.0)/127.5-1.0))<0.001 &&
+                   std::abs(state.LeftTrigger-(n+1)*0.2)<0.001) {
+                    ++matches[n]; ids.insert(std::wstring(raw.NonRoamableId()));
+                    labels=labels && gp.GetButtonLabel(GamepadButtons::A)==GameControllerButtonLabel::Cross
+                                  && gp.GetButtonLabel(GamepadButtons::B)==GameControllerButtonLabel::Circle;
+                }
+            }
+        }
+        bool good=sonyCount==expected && ids.size()==expected && labels;
+        for(unsigned n=0;n<expected;++n) good=good && matches[n]==1;
+        consecutive=good?consecutive+1:0;
+        if(consecutive>=10) {
+            std::cout<<"PASS WGI: "<<expected<<" distinct Sony controllers, independent button/axis/trigger markers and Sony labels"<<std::endl;
+            return 0;
+        }
+        Sleep(20);
+    }
+    std::cerr<<"FAIL WGI: Sony devices merged, duplicated, mislabeled or failed to deliver distinct inputs"<<std::endl;
+    return 1;
+}
 
 struct Coverage {
     unsigned buttons=0, hats=0, low=0, high=0, samples=0, badRun=0, errors=0;
@@ -31,6 +72,10 @@ int main(int argc, char** argv) {
     init_apartment(apartment_type::multi_threaded);
     unsigned seconds = argc>1 ? static_cast<unsigned>(std::stoul(argv[1])) : 30;
     if(seconds>120) return 2;
+    if(argc==4 && std::string(argv[2])=="--multi-sony") {
+        try { return VerifySonyMulti(seconds,static_cast<unsigned>(std::stoul(argv[3]))); }
+        catch(const hresult_error& e) { std::cerr<<"WGI multi error: "<<to_string(e.message())<<std::endl; return 1; }
+    }
     const bool verify=argc>2 && std::string(argv[2])=="--verify";
     const bool inventory=argc>2 && std::string(argv[2])=="--inventory";
     const bool suite=argc>2 && std::string(argv[2])=="--vibrate-suite";

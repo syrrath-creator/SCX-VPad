@@ -189,43 +189,98 @@ pub fn sony() -> Result<()> {
         {
             return Err("synthetic calibration feature mismatch".into());
         }
-        if reader.feature(identity)?[6] != 2 || reader.feature(firmware)?[1..4] != *b"Oct" {
-            return Err("synthetic identity/firmware feature mismatch".into());
+        let fw = reader.feature(firmware)?;
+        if reader.feature(identity)?[6] != 2
+            || (profile == Profile::DualSense
+                && (fw[20..24] != [3, 0, 4, 0]
+                    || fw[44..46] != [0x30, 6]
+                    || reader.feature(0x22)?[0] != 0x22))
+            || (profile == Profile::DualShock4 && fw[17..25] != *b"07:01:12")
+        {
+            return Err("Sony identity/firmware compatibility response mismatch".into());
         }
         println!("PASS {profile:?}: calibration, device identity and firmware features reach the Windows HID consumer");
+        let input_before = reader.snapshot()?;
+        let feedback_before = pad.feedback_snapshot()?;
+        for _ in 0..3 {
+            reader.configure_sony_usb()?;
+        }
+        if reader.snapshot()? != input_before
+            || pad.feedback_snapshot()?.encode() != feedback_before.encode()
+            || reader.feature(identity)?[6] != 2
+        {
+            return Err(
+                "Sony configuration unexpectedly changed input, feedback or identity".into(),
+            );
+        }
+        println!("PASS {profile:?}: native-game SetFeature initialization succeeds repeatedly without changing input, feedback or identity");
         let mut output = if profile == Profile::DualShock4 {
             let mut r = vec![0; 32];
             r[0] = 5;
-            r[1] = 3;
+            r[1] = 0xff; // Supported rumble/LED plus ignored hardware controls.
+            r[2] = 0xff;
             r[4] = 0x55;
             r[5] = 0xaa;
             r[6..9].copy_from_slice(&[17, 34, 51]);
             r
         } else {
-            let mut r = vec![0; 63];
+            let mut r = vec![0; 48];
             r[0] = 2;
-            r[1] = 3;
-            r[2] = 4;
+            r[1] = 0x0d; // Gears-style mixed output, including trigger flags.
+            r[2] = 0x17;
             r[3] = 0x55;
             r[4] = 0xaa;
             r[45..48].copy_from_slice(&[17, 34, 51]);
             r
         };
-        reader.output(&mut output)?;
+        reader.output(&mut output).map_err(|e| {
+            format!(
+                "{profile:?} output failed: {e}; native diagnostics {:?}",
+                pad.consumer_diagnostics()
+            )
+        })?;
         let expected = |f: &scx_vpad_protocol::Feedback| {
             f.left_motor == 0xaaaa && f.right_motor == 0x5555 && f.rgb == [17, 34, 51]
         };
-        let mut received = feedback.read(2000)?;
+        let mut received = feedback
+            .read(2000)
+            .map_err(|e| format!("Sony feedback wait: {e}"))?;
         for _ in 0..32 {
             if expected(&received) {
                 break;
             }
             received = feedback.read(2000)?;
         }
-        if !expected(&received) || !expected(&pad.feedback_snapshot()?) {
+        if !expected(&received)
+            || !expected(
+                &pad.feedback_snapshot()
+                    .map_err(|e| format!("Sony feedback snapshot: {e}"))?,
+            )
+        {
             return Err("Sony rumble/RGB feedback mismatch".into());
         }
         println!("PASS {profile:?}: game-side HID rumble/RGB output reaches event-driven SCX feedback and snapshot");
+        // No output change must block and cancel cleanly; the same reader then
+        // has to receive a new stop event rather than replaying stale rumble.
+        match feedback.read(40) {
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => (),
+            other => return Err(format!("Feedback idle wait did not time out: {other:?}").into()),
+        }
+        let (right, left) = if profile == Profile::DualShock4 {
+            (4, 5)
+        } else {
+            (3, 4)
+        };
+        output[right] = 0;
+        output[left] = 0;
+        reader.output(&mut output)?;
+        let stopped = feedback.read(2000)?;
+        if stopped.left_motor != 0 || stopped.right_motor != 0 {
+            return Err("Feedback stop after cancelled wait mismatch".into());
+        }
+        println!(
+            "PASS {profile:?}: idle feedback wait cancels; subsequent motor stop is delivered"
+        );
         pad.neutral()?;
         let snapshot = reader.snapshot()?;
         let b = if profile == Profile::DualShock4 { 5 } else { 8 };
@@ -297,5 +352,184 @@ pub fn xbox_feedback() -> Result<()> {
     }
     pad.neutral()?;
     println!("PASS Xbox: rumble stop propagates; owned device removed on completion");
+    Ok(())
+}
+
+/// Explicit offline-game diagnostic. The independent WGI/GameInput consumers
+/// receive distinctive states from four owned fixtures, never physical pads.
+pub fn sony_multi(wgi_probe: &str, gi_probe: &str, runtime: &str) -> Result<()> {
+    struct Fixture {
+        reader: GamepadReader<64>,
+        pad: VirtualPad,
+        profile: Profile,
+        state: InputState,
+    }
+    fn check(f: &Fixture) -> Result<()> {
+        let r = f.reader.snapshot()?;
+        let face = if f.profile == Profile::DualShock4 {
+            5
+        } else {
+            8
+        };
+        let trigger = if f.profile == Profile::DualShock4 {
+            8
+        } else {
+            5
+        };
+        let face_bits = [0x20, 0x40, 0x10, 0x80];
+        let marker = f.state.buttons.trailing_zeros() as usize;
+        if r[0] != 1
+            || r[face] != 8 | face_bits[marker]
+            || r[1] != (32 + marker * 48) as u8
+            || r[trigger] != ((marker + 1) * 51) as u8
+        {
+            return Err("parallel Sony HID input crossed devices or changed unexpectedly".into());
+        }
+        Ok(())
+    }
+    fn observe(fixtures: &mut [Fixture], exe: &str, args: &[&str]) -> Result<()> {
+        struct OwnedChild(std::process::Child);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = OwnedChild(std::process::Command::new(exe).args(args).spawn()?);
+        let started = Instant::now();
+        loop {
+            for f in fixtures.iter_mut() {
+                f.pad.submit(&f.state)?;
+            }
+            if let Some(status) = child.0.try_wait()? {
+                if !status.success() {
+                    return Err(format!("independent consumer failed: {exe}: {status}").into());
+                }
+                break;
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                return Err("independent consumer timed out".into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        for f in fixtures {
+            check(f)?;
+        }
+        Ok(())
+    }
+    for layout in ["ds5", "ds4", "mixed"] {
+        let mut fixtures = Vec::new();
+        let mut instances = std::collections::HashSet::new();
+        let mut sony_ids = std::collections::HashSet::new();
+        for slot in 0..4 {
+            let profile = if layout == "ds4" || (layout == "mixed" && slot % 2 == 1) {
+                Profile::DualShock4
+            } else {
+                Profile::DualSense
+            };
+            let pad = VirtualPad::create_profile(profile)?;
+            if !instances.insert(pad.instance_id().to_owned()) {
+                return Err("duplicate PnP instance".into());
+            }
+            let reader = GamepadReader::<64>::open(&pad)?;
+            let id = reader.feature(if profile == Profile::DualShock4 {
+                0x12
+            } else {
+                9
+            })?;
+            if !sony_ids.insert(id[1..7].to_vec()) {
+                return Err("duplicate Sony hardware identity".into());
+            }
+            fixtures.push(Fixture {
+                reader,
+                pad,
+                profile,
+                state: InputState {
+                    buttons: 1 << slot,
+                    left_x: -24576 + slot * 12288,
+                    left_trigger: (slot as u16 + 1) * 13107,
+                    ..InputState::NEUTRAL
+                },
+            });
+        }
+        for f in &mut fixtures {
+            f.pad.submit(&f.state)?;
+        }
+        for f in &fixtures {
+            check(f)?;
+        }
+        println!("PASS {layout}: four unique PnP/Sony identities and independent HID states");
+        observe(&mut fixtures, wgi_probe, &["5", "--multi-sony", "4"])?;
+        observe(
+            &mut fixtures,
+            gi_probe,
+            &[runtime, "2", "--expect-scx-sony", "4"],
+        )?;
+        // Write only to owned fixtures; no physical feedback sink is attached.
+        for (i, f) in fixtures.iter_mut().enumerate() {
+            let mut output = vec![
+                0;
+                if f.profile == Profile::DualShock4 {
+                    32
+                } else {
+                    48
+                }
+            ];
+            if f.profile == Profile::DualShock4 {
+                output[0] = 5;
+                output[1] = 1;
+                output[4] = 21 + i as u8;
+                output[5] = 41 + i as u8;
+            } else {
+                output[0] = 2;
+                output[1] = 3;
+                output[3] = 21 + i as u8;
+                output[4] = 41 + i as u8;
+            }
+            f.reader.output(&mut output)?;
+        }
+        for (i, f) in fixtures.iter_mut().enumerate() {
+            let feedback = f.pad.feedback_snapshot()?;
+            if feedback.left_motor != (41 + i as u16) * 257
+                || feedback.right_motor != (21 + i as u16) * 257
+            {
+                return Err("parallel Sony feedback crossed devices".into());
+            }
+        }
+        println!("PASS {layout}: per-controller rumble feedback remains isolated");
+        let removed = fixtures[3].pad.instance_id().to_owned();
+        fixtures.pop();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while device_present(&removed) && Instant::now() < deadline {
+            for f in &mut fixtures {
+                f.pad.submit(&f.state)?;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if device_present(&removed) {
+            return Err("removed Sony fixture remains present".into());
+        }
+        observe(&mut fixtures, wgi_probe, &["5", "--multi-sony", "3"])?;
+        observe(
+            &mut fixtures,
+            gi_probe,
+            &[runtime, "2", "--expect-scx-sony", "3"],
+        )?;
+        println!(
+            "PASS {layout}: removal affects only one pad; three Windows consumers stay independent"
+        );
+        for f in &mut fixtures {
+            f.pad.neutral()?;
+        }
+        drop(fixtures);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while instances.iter().any(|id| device_present(id)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        if instances.iter().any(|id| device_present(id)) {
+            return Err("Sony fixture leaked after release".into());
+        }
+    }
+    println!("SONY MULTI PASS: ds5/ds4/mixed; four independent HID/WGI/GameInput devices, isolated feedback and sibling removal.");
     Ok(())
 }

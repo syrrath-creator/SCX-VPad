@@ -11,9 +11,16 @@ build this UMDF2 driver under Microsoft's applicable SDK/WDK terms. The WDK
 tool package itself is not distributed here. Windows-supplied HID/UMDF drivers
 are installed by Windows and are not redistributed as SCX binaries.
 
-No HIDMaestro source, binaries, SDK, profile JSON, private certificate or key
-is included. The original SCX implementation follows documented Windows and
-USB HID interfaces. Compatibility does not imply vendor affiliation.
+Sony USB report descriptors and firmware-information compatibility response
+tables in crates/scx-vpad-core/src/sony_compat.rs are adapted from HIDMaestro
+under MIT. Copyright (c) 2026 HIDMaestro Contributors.
+Source: https://github.com/hifihedgehog/HIDMaestro
+Revision: 0c85d866cdd8e70acb63d968173b9201b2cb8bb1.
+The complete applicable license is included in licenses/HIDMaestro-MIT.txt.
+These portions remain MIT-licensed; SCX's commercial redistribution restriction
+applies to original SCX code, not to the third-party portions.
+No HIDMaestro driver binaries, SDK, private certificate or key are included.
+Compatibility does not imply vendor affiliation.
 
 Complete applicable dependency license texts accompany source/package notices
 when dependencies are packaged. Build artifacts must be checked against the

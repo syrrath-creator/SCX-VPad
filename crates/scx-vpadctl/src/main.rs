@@ -57,6 +57,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("self-test") if args.len() == 1 => verify::self_test()?,
         Some("self-test-sony") if args.len() == 1 => verify::sony()?,
+        Some("self-test-sony-multi") if args.len() == 4 => {
+            verify::sony_multi(&args[1], &args[2], &args[3])?
+        }
         Some("self-test-xbox-feedback") if args.len() == 1 => verify::xbox_feedback()?,
         Some("benchmark-hid") if args.len() <= 2 => {
             verify::benchmark(number(args.get(1), 1000, 100, 100000)? as usize)?
@@ -152,7 +155,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         _ => {
-            println!("scx-vpadctl status\nscx-vpadctl create [seconds 1..3600] [controllers 1..4] [generic|ds4|ds5|xbox]\nscx-vpadctl demo [seconds] [controllers] [generic|ds4|ds5|xbox]\nscx-vpadctl stream [generic|ds4|ds5|xbox]\nscx-vpadctl self-test\nscx-vpadctl self-test-sony\nscx-vpadctl self-test-xbox-feedback\nscx-vpadctl security-check [generic|ds4|ds5|xbox]\nscx-vpadctl benchmark [samples 100..1000000] [generic|ds4|ds5|xbox]\nscx-vpadctl benchmark-hid [samples 100..100000]\n\nDS4/DS5 and Xbox are experimental. The service and locally signed UMDF2 driver must be installed once by an administrator. Normal commands never elevate. Demo, self-tests and benchmark-hid generate actual button/stick input; close games first.");
+            println!("scx-vpadctl status\nscx-vpadctl create [seconds 1..3600] [controllers 1..4] [generic|ds4|ds5|xbox]\nscx-vpadctl demo [seconds] [controllers] [generic|ds4|ds5|xbox]\nscx-vpadctl stream [generic|ds4|ds5|xbox]\nscx-vpadctl self-test\nscx-vpadctl self-test-sony\nscx-vpadctl self-test-sony-multi <wgi_probe.exe> <gameinput3_probe.exe> <GameInputRedist.dll>\nscx-vpadctl self-test-xbox-feedback\nscx-vpadctl security-check [generic|ds4|ds5|xbox]\nscx-vpadctl benchmark [samples 100..1000000] [generic|ds4|ds5|xbox]\nscx-vpadctl benchmark-hid [samples 100..100000]\n\nDS4/DS5 and Xbox are experimental. The service and locally signed UMDF2 driver must be installed once by an administrator. Normal commands never elevate. Demo, self-tests and benchmark-hid generate actual button/stick input; close games first.");
         }
     }
     Ok(())

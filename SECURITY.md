@@ -49,6 +49,17 @@ Each virtual controller has independent state and bounded buffers. A lost owner
 must cause device removal or neutralization; stale input must not persist.
 Overflow must be reported and must never silently discard a button release.
 
+Sony transport (.24): the service creates a 512-byte shared section and three
+events before exposing the random lease identifier. Existing names are rejected.
+Only SYSTEM, the UMDF group and the installed owner can access these objects;
+a medium-integrity no-write-up label excludes low-integrity producers. Each
+packet still carries the independent 256-bit lease capability. The driver copies
+fixed atomic words, validates the local copy, and returns an explicit status.
+Shared memory contains no pointers, variable lengths or queue indices. Feedback
+uses atomic words under a sequence lock; consumers cannot change driver state
+through the feedback area. The worker is joined before unmapping/freeing state.
+Generic HID retains its authenticated feature transport; Xbox its private IOCTLs.
+
 No certificate private key belongs in the repository or release archive. The
 installer creates a machine-local, nonexportable signing key. It must never
 disable Secure Boot, Memory Integrity, driver-signature enforcement, security

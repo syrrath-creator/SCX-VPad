@@ -174,6 +174,27 @@ pub unsafe extern "C" fn scx_vpad_feature_report_for_profile(
     STATUS_OK
 }
 
+/// Validates the two Sony radio-configuration feature writes seen during native
+/// game initialization. A virtual USB pad has no Bluetooth radio to configure:
+/// these are acknowledged without changing input, pairing identity or feedback.
+/// All other feature writes (especially the private producer IDs) stay denied.
+#[unsafe(no_mangle)]
+pub extern "C" fn scx_vpad_validate_configuration_feature(
+    raw: u32,
+    report_id: u8,
+    length: usize,
+) -> u32 {
+    let expected = match (raw, report_id) {
+        (3, 0x14) => 17,
+        (4, 0x08) => 48,
+        _ => return UNSUPPORTED,
+    };
+    if length != expected {
+        return STATUS_INVALID_LENGTH;
+    }
+    STATUS_OK
+}
+
 /// # Safety
 /// Input is readable for length and output writable for capacity; overlap allowed.
 #[unsafe(no_mangle)]
@@ -196,7 +217,7 @@ pub unsafe extern "C" fn scx_vpad_parse_output_for_profile(
     };
     if !matches!(
         (p, length),
-        (Profile::DualShock4, 32) | (Profile::DualSense, 63)
+        (Profile::DualShock4, 32) | (Profile::DualSense, 48 | 63)
     ) {
         return STATUS_INVALID_LENGTH;
     }
@@ -218,6 +239,39 @@ pub unsafe extern "C" fn scx_vpad_parse_output_for_profile(
 mod tests {
     use super::*;
     use scx_vpad_protocol::{CAP_EXPERIMENTAL, CAP_XINPUT};
+    #[test]
+    fn sony_configuration_writes_are_separate_from_producer_authorization() {
+        for (raw, id, length) in [(3, 0x14, 17), (4, 0x08, 48)] {
+            assert_eq!(
+                scx_vpad_validate_configuration_feature(raw, id, length),
+                STATUS_OK
+            );
+            for invalid in [0, 1, length - 1, length + 1, 64, 97, usize::MAX] {
+                assert_eq!(
+                    scx_vpad_validate_configuration_feature(raw, id, invalid),
+                    STATUS_INVALID_LENGTH
+                );
+            }
+            for other in 0..=u8::MAX {
+                if other != id {
+                    assert_eq!(
+                        scx_vpad_validate_configuration_feature(raw, other, length),
+                        UNSUPPORTED
+                    );
+                }
+            }
+        }
+        for raw in [0, 1, 2, 5, u32::MAX] {
+            assert_eq!(
+                scx_vpad_validate_configuration_feature(raw, 0x14, 17),
+                UNSUPPORTED
+            );
+            assert_eq!(
+                scx_vpad_validate_configuration_feature(raw, 0x08, 48),
+                UNSUPPORTED
+            );
+        }
+    }
     #[test]
     fn xbox_info_cannot_be_mistaken_for_a_hid_profile() {
         let mut info = [0; 32];

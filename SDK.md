@@ -54,3 +54,24 @@ into logs or another process. Do not construct legacy HID feature frames.
 
 The repository license applies to SDK distribution and integration; commercial
 distribution requires the rights holder's written permission. See [LICENSE](LICENSE).
+
+Native .24 requires the matching service and SDK. Sony submissions use a
+per-lease shared section and an acknowledged event, separate from public HID.
+The SDK does not return success until the driver validates and accepts the
+packet. A submission timeout poisons that producer until reconnect; no pending
+packet is overwritten. Xbox and generic HID retain their established transports.
+
+Sony feedback: create one `FeedbackReader` per owned `VirtualPad`, wait with
+`read(timeout_ms)` on a separate worker, and treat `TimedOut` as an idle wait.
+Use `feedback_snapshot()` for
+an independent immediate read without consuming the feedback stream. Native .24
+uses a separate feedback sequence/event; a timeout does not consume a change.
+The updated SDK retains the preceding drivers' HID feedback paths when the
+old service has not provisioned a channel. Xbox is unchanged.
+
+
+Native .28 keeps Sony devices in the ROOT-compatible Windows container. Do not
+use the container GUID as a unique controller identifier: use the lease/device
+path or the distinct GameInput device ID instead. Xbox/generic devices retain
+their per-device containers. Four-controller tests verify independent identity,
+input, feedback and removing one device while its three siblings remain active.

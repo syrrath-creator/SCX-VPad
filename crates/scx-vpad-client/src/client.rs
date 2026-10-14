@@ -27,6 +27,7 @@ const XUSB_FEEDBACK_GET: u32 = 0x22600c;
 /// Holds one service lease and one direct HID channel. Dropping it removes only
 /// this controller. A crash closes the pipe, which also releases the device.
 pub struct VirtualPad {
+    channel: Option<crate::channel::Channel>,
     device: Handle,
     pipe: Handle,
     lease: u64,
@@ -62,11 +63,32 @@ impl VirtualPad {
         {
             return Err(fail("invalid device lease"));
         }
+        // New services provision a private channel before PnP creation. Old
+        // drivers/services remain readable through their original HID path.
+        let channel = if matches!(profile, Profile::DualShock4 | Profile::DualSense) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match crate::channel::Channel::open(&response.instance, profile) {
+                    Ok(channel) => break Some(channel),
+                    Err(e) if e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) => break None,
+                    Err(e)
+                        if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(25))
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        } else {
+            None
+        };
         let deadline = Instant::now() + Duration::from_secs(10);
         let (device, control_path) = loop {
-            if let Some(endpoint) =
-                find_endpoint(&response.instance, true, profile == Profile::Xbox360)?
-            {
+            if let Some(endpoint) = find_endpoint(
+                &response.instance,
+                channel.is_none(),
+                profile == Profile::Xbox360,
+            )? {
                 break endpoint;
             }
             if Instant::now() >= deadline {
@@ -82,7 +104,9 @@ impl VirtualPad {
         let mut info = [0u8; HID_FEATURE_REPORT_SIZE];
         info[0] = 0x7f;
         let io_event = Handle::event()?;
-        if profile == Profile::Xbox360 {
+        if let Some(channel) = &channel {
+            info[1..33].copy_from_slice(&channel.bytes::<32>(288));
+        } else if profile == Profile::Xbox360 {
             if ioctl(&device, &io_event, XUSB_INFO, &[], &mut info[1..33], 2000)? != 32 {
                 return Err(fail("invalid XUSB info length"));
             }
@@ -98,6 +122,7 @@ impl VirtualPad {
             return Err(fail("driver profile differs from requested profile"));
         }
         Ok(Self {
+            channel,
             device,
             pipe,
             lease: response.lease,
@@ -114,6 +139,15 @@ impl VirtualPad {
     }
     /// Read-only per-device I/O counters for compatibility diagnostics.
     pub fn consumer_diagnostics(&self) -> io::Result<Vec<u32>> {
+        if let Some(c) = &self.channel {
+            return Ok(c
+                .bytes::<32>(224)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| u32::from_le_bytes(*b))
+                .collect());
+        }
         let mut bytes = [0u8; HID_FEATURE_REPORT_SIZE];
         let data = if self.profile == Profile::Xbox360 {
             let n = ioctl(
@@ -153,10 +187,22 @@ impl VirtualPad {
     /// Inspect the real producer endpoint, including HID collection security.
     /// This does not modify ACLs or grant permissions.
     pub fn control_security(&self) -> io::Result<String> {
+        if let Some(c) = &self.channel {
+            return crate::security::channel_descriptor(&c.name);
+        }
         crate::security::descriptor(&self.device)
     }
     /// Bounded diagnostic stages only; no token/SID or credential is exposed.
     pub fn authorization_diagnostic(&self) -> io::Result<String> {
+        if let Some(c) = &self.channel {
+            let b = c.bytes::<12>(256);
+            return Ok(format!(
+                "authorization stage={} error=0x{:08x} requestor_mode={}",
+                u32::from_le_bytes(b[..4].try_into().unwrap()),
+                u32::from_le_bytes(b[4..8].try_into().unwrap()),
+                u32::from_le_bytes(b[8..].try_into().unwrap())
+            ));
+        }
         if self.profile == Profile::Xbox360 {
             return Err(fail("HID authorization diagnostic not available for XUSB"));
         }
@@ -222,7 +268,10 @@ impl VirtualPad {
     /// a neutral input packet with ACCESS_DENIED. A HID consumer handle may be public.
     pub fn verify_restricted_writer_denied(&self) -> io::Result<()> {
         crate::security::restricted_writer_denied(
-            &self.control_path,
+            self.channel
+                .as_ref()
+                .map(|c| c.name.as_str())
+                .unwrap_or(&self.control_path),
             self.profile == Profile::Xbox360,
         )
     }
@@ -230,7 +279,10 @@ impl VirtualPad {
     /// Only an ephemeral duplicate token is lowered; the caller stays unchanged.
     pub fn verify_low_integrity_writer_denied(&self) -> io::Result<()> {
         crate::security::low_integrity_writer_denied(
-            &self.control_path,
+            self.channel
+                .as_ref()
+                .map(|c| c.name.as_str())
+                .unwrap_or(&self.control_path),
             self.profile == Profile::Xbox360,
         )
     }
@@ -259,7 +311,11 @@ impl VirtualPad {
         wipe(&mut wrong_bytes);
         for capability in [&Capability::default(), &wrong, &other.capability] {
             denied(
-                submit_authenticated(&zero_handle, capability, &state),
+                if let Some(c) = &mut self.channel {
+                    c.submit(capability, &state)
+                } else {
+                    submit_authenticated(&zero_handle, capability, &state)
+                },
                 &[ERROR_ACCESS_DENIED],
                 "zero/wrong/cross-device capability",
             )?;
@@ -301,9 +357,8 @@ impl VirtualPad {
         self.neutral()?;
         // Invalid capabilities must not consume a valid packet's sequence.
         denied(
-            submit_authenticated(
-                &self.device,
-                &self.capability,
+            self.submit_exact(
+                &Capability::new(*self.capability.bytes()),
                 &InputState {
                     sequence: self.sequence,
                     ..InputState::NEUTRAL
@@ -319,8 +374,7 @@ impl VirtualPad {
         let mut fresh = Self::create_profile(self.profile)?;
         fresh.neutral()?;
         denied(
-            submit_authenticated(
-                &fresh.device,
+            fresh.submit_exact(
                 &old,
                 &InputState {
                     sequence: 2,
@@ -353,12 +407,26 @@ impl VirtualPad {
             )?;
             return Ok(());
         }
-        submit_authenticated(&self.device, &self.capability, &state)
+        if let Some(c) = &mut self.channel {
+            c.submit(&self.capability, &state)
+        } else {
+            submit_authenticated(&self.device, &self.capability, &state)
+        }
+    }
+    fn submit_exact(&mut self, capability: &Capability, state: &InputState) -> io::Result<()> {
+        if let Some(c) = &mut self.channel {
+            c.submit(capability, state)
+        } else {
+            submit_authenticated(&self.device, capability, state)
+        }
     }
     pub fn neutral(&mut self) -> io::Result<()> {
         self.submit(&InputState::NEUTRAL)
     }
     pub fn feedback_snapshot(&mut self) -> io::Result<Feedback> {
+        if let Some(c) = &self.channel {
+            return c.snapshot(self.profile);
+        }
         if self.profile == Profile::GenericHid {
             return Err(fail("this profile has no output feedback"));
         }
@@ -767,26 +835,92 @@ fn find_endpoint(
 /// waits consume no CPU; a timeout cancels and drains the Windows request before
 /// returning, so the reader can safely be reused or moved to an input worker.
 pub struct FeedbackReader {
+    channel: Option<crate::channel::Channel>,
     device: Handle,
     event: Handle,
     profile: Profile,
     last_sequence: u32,
+    feature_wait: bool,
 }
 impl FeedbackReader {
     pub fn open(pad: &VirtualPad) -> io::Result<Self> {
         if pad.profile == Profile::GenericHid {
             return Err(fail("this profile has no output feedback"));
         }
-        let device = find_collection(pad.instance_id(), true, pad.profile == Profile::Xbox360)?
-            .ok_or_else(|| fail("control HID collection unavailable"))?;
+        let channel = if pad.channel.is_some() {
+            Some(crate::channel::Channel::open(
+                pad.instance_id(),
+                pad.profile,
+            )?)
+        } else {
+            None
+        };
+        let device = find_collection(
+            pad.instance_id(),
+            channel.is_none(),
+            pad.profile == Profile::Xbox360,
+        )?
+        .ok_or_else(|| fail("control HID collection unavailable"))?;
+        let feature_wait = if channel.is_none() && pad.profile != Profile::Xbox360 {
+            let mut preparsed = 0;
+            check(unsafe { HidD_GetPreparsedData(device.0, &mut preparsed) } as i32)?;
+            let mut caps = HIDP_CAPS::default();
+            let result = unsafe { HidP_GetCaps(preparsed, &mut caps) };
+            unsafe {
+                HidD_FreePreparsedData(preparsed);
+            }
+            if result != HIDP_STATUS_SUCCESS {
+                return Err(fail("feedback HID caps unavailable"));
+            }
+            caps.InputReportByteLength == 0
+        } else {
+            false
+        };
         Ok(Self {
             device,
             event: Handle::event()?,
             profile: pad.profile,
-            last_sequence: 0,
+            last_sequence: if feature_wait || channel.is_some() {
+                u32::MAX
+            } else {
+                0
+            },
+            feature_wait,
+            channel,
         })
     }
     pub fn read(&mut self, timeout_ms: u32) -> io::Result<Feedback> {
+        if let Some(c) = &self.channel {
+            return c.read_feedback(self.profile, &mut self.last_sequence, timeout_ms);
+        }
+        if self.feature_wait {
+            // HIDClass requires the collection's maximum feature buffer even
+            // for this shorter report (the authenticated submit report is 97).
+            let mut request = [0u8; HID_FEATURE_REPORT_SIZE];
+            request[0] = 0x78;
+            let mut report = request;
+            // Public IOCTL_HID_GET_FEATURE carries the request in the output
+            // buffer (including its report ID), with no separate input buffer.
+            // ioctl() retains it until completion/cancellation is drained.
+            if ioctl(
+                &self.device,
+                &self.event,
+                0x000b0192,
+                &[],
+                &mut report,
+                timeout_ms,
+            )? != 33
+                || report[0] != 0x78
+            {
+                return Err(fail("invalid feedback wait feature"));
+            }
+            let feedback =
+                Feedback::decode(&report[1..33]).map_err(|_| fail("invalid feedback packet"))?;
+            if feedback.profile != self.profile {
+                return Err(fail("mismatched feedback profile"));
+            }
+            return Ok(feedback);
+        }
         if self.profile == Profile::Xbox360 {
             let mut report = [0u8; 32];
             if ioctl(
@@ -1000,8 +1134,8 @@ impl<const N: usize> GamepadReader<N> {
     /// Requests one allowlisted Sony feature through the game-facing HID API.
     pub fn feature(&self, id: u8) -> io::Result<Vec<u8>> {
         let length = match (self.profile, id) {
-            (Profile::DualShock4, 2 | 0x12 | 0xa3) => 49,
-            (Profile::DualSense, 5 | 9 | 0x20) => 64,
+            (Profile::DualShock4, 2 | 0x12 | 0xa3) => 64,
+            (Profile::DualSense, 5 | 9 | 0x20 | 0x22) => 64,
             _ => return Err(fail("unsupported consumer feature")),
         };
         let mut bytes = vec![0; length];
@@ -1011,11 +1145,25 @@ impl<const N: usize> GamepadReader<N> {
         } as i32)?;
         Ok(bytes)
     }
+    /// Sends the Sony initialization feature through the same public API used
+    /// by native games. This reader only opens its own leased virtual device.
+    pub fn configure_sony_usb(&self) -> io::Result<()> {
+        let (id, length) = match self.profile {
+            Profile::DualShock4 => (0x14, 17),
+            Profile::DualSense => (0x08, 48),
+            _ => return Err(fail("unsupported consumer configuration")),
+        };
+        let mut bytes = vec![0; length];
+        bytes[0] = id;
+        check(unsafe {
+            HidD_SetFeature(self.device.0, bytes.as_mut_ptr().cast(), bytes.len() as u32)
+        } as i32)
+    }
     /// Sends a fixed-length Sony output to the game-facing HID collection.
     pub fn output(&self, bytes: &mut [u8]) -> io::Result<()> {
         if !matches!(
             (self.profile, bytes.len(), bytes.first()),
-            (Profile::DualShock4, 32, Some(5)) | (Profile::DualSense, 63, Some(2))
+            (Profile::DualShock4, 32, Some(5)) | (Profile::DualSense, 48, Some(2))
         ) {
             return Err(fail("invalid consumer output report"));
         }
