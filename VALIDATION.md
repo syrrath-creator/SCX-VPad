@@ -1,5 +1,29 @@
 # Windows validation record
 
+## Preview 2 desktop installer — 15 October 2026
+
+The separate Setup EXE embeds the unchanged published 0.1.0.28 ZIP, SHA-256
+`ad7e32670e7110fe1a71a7b8601c2389d66b9b65b06b3197639801b006604cd2`.
+
+- 32 installer checks pass: complete embedded manifest verification, required
+  payloads, Windows argument round-trips, unsafe ZIP paths, owner SID and
+  operation allowlists, and the Windows platform guard. These tests do not
+  install a driver or modify trust.
+- The fixed PowerShell wrapper passes syntax validation. The seven existing
+  installer recovery cases and isolated GameInput mapping tests still pass.
+- An interactive **Reinstall** completed on the Windows 11 x64 development PC.
+  The user approved UAC; the service was running afterward and the original
+  Windows account remained authorized. Setup's post-install verification and
+  the underlying installation transcript both reported success.
+- The revised GUI was visually checked at 200% Windows scaling after correcting
+  clipped title, wrapped text and action buttons. German and English text are
+  included; this is not an all-DPI/all-locale certification claim.
+
+Fresh installation and standalone removal through the GUI have not been
+separately exercised on a clean PC. Reinstall exercised removal and installation
+of the existing revision. The EXE has no public publisher signature; the local
+driver signing mechanism and the driver's preview status are unchanged.
+
 ## Revision 0.1.0.28 — Sony container policy and multi-controller validation
 
 The successful diagnostic policy below is now the default Sony service policy.

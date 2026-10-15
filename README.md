@@ -85,6 +85,36 @@ a file-hash manifest. It does not install anything or modify Windows trust.
 
 ## Install and exercise a development build
 
+### Recommended: Windows Setup EXE
+
+Download **[SCX-VPad-0.1.0.28-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.0-preview.2/SCX-VPad-0.1.0.28-Setup-x64.exe)**
+from the existing Preview 2 release. Its separate `Setup-SHA256SUMS.txt` asset
+contains the EXE checksum. No ZIP extraction or terminal commands are needed.
+
+1. Close SCX and games. Start the EXE by double-clicking it from the Windows
+   account that will use SCX.
+2. Read the license and local driver/certificate notice, confirm consent and
+   select **Install**. Approve the Windows administrator prompt.
+3. Wait for the success message, then open SCX, select **SCX VPad** and connect.
+   Restart Windows first if the installer requests it.
+
+The EXE installs the driver **and** its service using the unchanged, verified
+Preview 2 package. It includes German and English interfaces and works offline.
+If already installed, **Reinstall** replaces this revision and retains the
+authorized Windows account. Driver updates still require administrator approval;
+ordinary controller connections do not. SCX application profiles are not changed.
+
+For removal, run the EXE again and choose **Uninstall**. Setup is not registered
+as a separate entry in Windows Installed apps. **Copy log** copies diagnostics;
+failed operations retain a protected setup log at the location shown in the UI.
+
+The Setup EXE has no public publisher signature, so Windows may display an
+unknown-publisher warning. Its local driver certificate does not give the EXE a
+globally trusted signature. This remains a development preview, not WHQL-certified.
+Neither the EXE nor its driver is included in the SCX Store package.
+
+### Advanced: manual ZIP installation
+
 Download the Windows x64 ZIP from [Releases](https://github.com/syrrath-creator/SCX-VPad/releases)
 and compare its SHA256 with the accompanying checksum file. For a downloaded
 ZIP, review its source and use Windows **Properties → Unblock** before extracting
@@ -114,7 +144,7 @@ only while they still match SCX's installed values, preserving later external ed
 The signing key is local, nonexportable and restricted to administrators and
 SYSTEM. Installation failures are recorded under `Program Files\SCX VPad\logs`.
 Copy a failure log before uninstalling; removal deletes that installation folder.
-Use the packaged `installer/Uninstall.ps1` for removal. Driver/service upgrades
+Alternatively, use the packaged `installer/Uninstall.ps1` for removal. Driver/service upgrades
 remain administrative operations; ordinary controller connections do not.
 The installed removal script is also retained under
 `C:\Program Files\SCX VPad\installer\Uninstall.ps1`.
@@ -135,6 +165,20 @@ SCX 2.1.2 recommends this backend. Installation does not modify application
 profiles. Update the driver, service and client together; old Sony clients from
 before native .24 are incompatible with the current private producer channel.
 Recorded results and remaining test coverage are in [VALIDATION.md](VALIDATION.md).
+
+### Build the Setup EXE
+
+The small WinForms shell uses the .NET Framework included with Windows 11. It
+wraps the Rust driver/service package; it does not rebuild or change them.
+Build from an already validated package and supply its independently verified hash:
+
+```powershell
+./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.28-preview.2-windows-x64.zip -ExpectedSha256 ad7e32670e7110fe1a71a7b8601c2389d66b9b65b06b3197639801b006604cd2 -OutputDirectory ./artifacts/setup
+./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.28-preview.2-windows-x64.zip -BuildDirectory ./artifacts/setup
+```
+
+The published Setup is an additional Preview 2 asset. The original ZIP and tag
+are unchanged; see the release notes for the Setup source commit.
 
 ## License and commercial distribution
 
