@@ -7,6 +7,13 @@ use scx_vpad_protocol::*;
 
 pub const MAX_REPORT_SIZE: usize = 64;
 
+// Offsets include the USB report ID. SDL's PS5StatePacket_t excludes it.
+const DS5_PACKET_SEQUENCE: core::ops::Range<usize> = 12..16;
+const DS5_SENSOR_TIME: core::ops::Range<usize> = 28..32;
+const DS5_REPORT_TIME: core::ops::Range<usize> = 49..53;
+const DS5_CONNECTION_STATE: usize = 54;
+const DS5_USB_CONNECTED: u8 = 0x08;
+
 /// Synthesizes the 64-byte USB report; no Bluetooth CRC/transport is involved.
 pub fn encode(profile: Profile, state: &InputState) -> Option<[u8; MAX_REPORT_SIZE]> {
     if !matches!(
@@ -67,12 +74,19 @@ pub fn encode(profile: Profile, state: &InputState) -> Option<[u8; MAX_REPORT_SI
         r[8] = face;
         r[9] = shoulders;
         r[10] = system | bit(state, BUTTON_MICROPHONE, 2);
+        // Native Sony consumers also inspect the full 32-bit packet sequence;
+        // the 8-bit HID counter alone does not describe report freshness.
+        r[DS5_PACKET_SEQUENCE].copy_from_slice(&state.sequence.to_le_bytes());
         motion(state, &mut r, 16, 22);
         // DualSense sensor tick is one third microsecond, wrapping at 32 bits.
-        r[28..32].copy_from_slice(&(state.timestamp_us.wrapping_mul(3) as u32).to_le_bytes());
+        let ticks = (state.timestamp_us.wrapping_mul(3) as u32).to_le_bytes();
+        r[DS5_SENSOR_TIME].copy_from_slice(&ticks);
+        // Sensors and the synthetic USB report are sampled together.
+        r[DS5_REPORT_TIME].copy_from_slice(&ticks);
         contact(&mut r[33..37], state, 0, 1080);
         contact(&mut r[37..41], state, 1, 1080);
         r[53] = 0x2a; // synthetic wired full battery
+        r[DS5_CONNECTION_STATE] = DS5_USB_CONNECTED;
     }
     Some(r)
 }
@@ -124,12 +138,17 @@ pub fn feature(profile: Profile, report_id: u8, instance_id: u64) -> Option<([u8
     r[0] = report_id;
     match (profile, report_id) {
         (Profile::DualShock4, 2) | (Profile::DualSense, 5) => {
+            // Use the observed Maestro reference range (+/-500 deg/s,
+            // +/-8000 raw). The former +/-90 and +/-1440 had the same
+            // 16 raw units/deg/s ratio, but a different feature payload.
+            // This isolates that real difference without rescaling motion.
+            // Capture: sony-protocol-20261023-145408-617-maestro-protocol.txt.
             for offset in [7, 11, 15] {
-                signed(&mut r, offset, 1440);
-                signed(&mut r, offset + 2, -1440);
+                signed(&mut r, offset, 8000);
+                signed(&mut r, offset + 2, -8000);
             }
-            signed(&mut r, 19, 90);
-            signed(&mut r, 21, 90);
+            signed(&mut r, 19, 500);
+            signed(&mut r, 21, 500);
             for offset in [23, 27, 31] {
                 signed(&mut r, offset, 8192);
                 signed(&mut r, offset + 2, -8192);
@@ -419,6 +438,44 @@ mod tests {
         assert_eq!(&d5[33..37], &[2, 0x7f, 0x77, 0x43]);
     }
     #[test]
+    fn dualsense_usb_status_and_extended_counters_survive_wrap() {
+        // Independent wire offsets from the published 64-byte USB packet.
+        // Exercise both counter widths and a sensor-clock overflow while the
+        // controls stay held: fresh reports must not look like duplicate zero.
+        for (sequence, timestamp_us, ticks) in [
+            (0xfe, 123_456, 370_368u32),
+            (0xff, 123_457, 370_371),
+            (0x100, 123_458, 370_374),
+            (u32::MAX, 1_431_655_765, u32::MAX),
+            (0, 1_431_655_766, 2),
+            (1, u64::MAX, u32::MAX - 2),
+        ] {
+            let r = encode(
+                Profile::DualSense,
+                &InputState {
+                    sequence,
+                    timestamp_us,
+                    buttons: BUTTON_SOUTH | BUTTON_START,
+                    ..InputState::NEUTRAL
+                },
+            )
+            .unwrap();
+            assert_eq!(r[0], 1);
+            assert_eq!(r[7], sequence as u8);
+            assert_eq!(u32::from_le_bytes(r[12..16].try_into().unwrap()), sequence);
+            assert_eq!(u32::from_le_bytes(r[28..32].try_into().unwrap()), ticks);
+            assert_eq!(u32::from_le_bytes(r[49..53].try_into().unwrap()), ticks);
+            assert_eq!(r[53], 0x2a);
+            assert_eq!(r[54], 0x08); // USB present, no fictitious headset
+            assert_eq!(r[8], 0x28); // Cross held, d-pad neutral
+            assert_eq!(r[9], 0x20); // Options held
+            assert_eq!(r[33] & 0x80, 0x80);
+            assert_eq!(r[37] & 0x80, 0x80);
+        }
+        let neutral = encode(Profile::DualSense, &InputState::NEUTRAL).unwrap();
+        assert_eq!(neutral[54], 0x08); // neutral does not mean disconnected
+    }
+    #[test]
     fn synthetic_calibration_is_nonzero_and_matches_encoder_units() {
         for (profile, id) in [(Profile::DualShock4, 2), (Profile::DualSense, 5)] {
             let (r, _) = feature(profile, id, 1).unwrap();
@@ -426,6 +483,37 @@ mod tests {
             assert_eq!((read(19) + read(21)) * 1024 / (read(7) - read(9)), 64);
             assert_eq!(16384 / (read(23) - read(25)), 1);
             assert_eq!(read(1), 0);
+        }
+    }
+    #[test]
+    fn sony_calibration_reference_preserves_motion_on_all_axes() {
+        // Independent observed feature-05 reference, not generated by encode().
+        let expected: [u8; 41] = [
+            5, 0, 0, 0, 0, 0, 0, 0x40, 0x1f, 0xc0, 0xe0, 0x40, 0x1f, 0xc0, 0xe0, 0x40, 0x1f, 0xc0,
+            0xe0, 0xf4, 1, 0xf4, 1, 0, 0x20, 0, 0xe0, 0, 0x20, 0, 0xe0, 0, 0x20, 0, 0xe0, 0, 0, 0,
+            0, 0, 0,
+        ];
+        let (r, len) = feature(Profile::DualSense, 5, 1).unwrap();
+        assert_eq!(len, expected.len());
+        assert_eq!(&r[..len], &expected);
+        for (profile, id) in [(Profile::DualSense, 5), (Profile::DualShock4, 2)] {
+            let (calibration, _) = feature(profile, id, 1).unwrap();
+            let read = |offset| {
+                i64::from(i16::from_le_bytes([
+                    calibration[offset],
+                    calibration[offset + 1],
+                ]))
+            };
+            let speed = read(19) + read(21);
+            for (axis, offset) in [7, 11, 15].into_iter().enumerate() {
+                let range = read(offset) - read(offset + 2);
+                for raw in [-16000, -8000, -1600, -16, 0, 16, 1600, 8000, 16000] {
+                    // Compare the previous and observed calibrations at real
+                    // positive/negative motion samples, not just zero bias.
+                    assert_eq!(raw * speed * 1024 / range, raw * 180 * 1024 / 2880);
+                    assert_eq!(read(1 + axis * 2), 0);
+                }
+            }
         }
     }
     #[test]

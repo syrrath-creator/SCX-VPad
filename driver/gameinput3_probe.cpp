@@ -31,13 +31,18 @@ static void CALLBACK DeviceChanged(GameInputCallbackToken,void*,IGameInputDevice
     uint64_t timestamp,GameInputDeviceStatus status,GameInputDeviceStatus previous) {
     const GameInputDeviceInfo* i=nullptr;
     const HRESULT hr=device->GetDeviceInfo(&i);
-    if(FAILED(hr) || !i) return;
+    if(FAILED(hr) || !i) {printf("GetDeviceInfo failed hr=%08lx status=%x\n", hr, status); return;}
     if(!(i->supportedInput&GameInputKindGamepad) &&
        !(i->usage.page==1 && (i->usage.id==4 || i->usage.id==5))) return;
     std::lock_guard<std::mutex> lock(output);
     std::string path=i->pnpPath?i->pnpPath:"";
     std::transform(path.begin(),path.end(),path.begin(),[](unsigned char c){return static_cast<char>(std::tolower(c));});
-    if(path.find("hid#scxvpad#")!=std::string::npos) {
+    // Software enumerators may carry the public Sony VID/PID. Match either
+    // exact namespace; do not count physical Sony devices or arbitrary SCX prefixes.
+    const bool scxPath = path.find("hid#scxvpad#") != std::string::npos ||
+        path.find("hid#scxvpad&vid_054c&pid_09cc#") != std::string::npos ||
+        path.find("hid#scxvpad&vid_054c&pid_0ce6#") != std::string::npos;
+    if(scxPath && i->vendorId == 0x054c && (i->productId == 0x09cc || i->productId == 0x0ce6)) {
         if(status&GameInputDeviceConnected) {
             const auto* bytes=reinterpret_cast<const unsigned char*>(&i->deviceId);
             sonyDevices[path]=std::string(reinterpret_cast<const char*>(bytes),sizeof(i->deviceId));
@@ -86,7 +91,9 @@ int wmain(int argc,wchar_t** argv) {
     wprintf(L"runtime=%ls\n",argv[1]);printf("GameInputInitialize(v3)=%08lx\n",hr);
     if(FAILED(hr)) {FreeLibrary(library);return 1;}
     GameInputCallbackToken token=0;
-    hr=input->RegisterDeviceCallback(nullptr,static_cast<GameInputKind>(0xffffffffu),GameInputDeviceAnyStatus,
+    // Enumerate the documented gamepad kind we verify. An all-bits mask also
+    // selects undefined kinds and caused incomplete enumeration in this probe.
+    hr=input->RegisterDeviceCallback(nullptr,GameInputKindGamepad,GameInputDeviceAnyStatus,
         GameInputBlockingEnumeration,nullptr,DeviceChanged,&token);
     printf("RegisterDeviceCallback=%08lx\n",hr);
     if(SUCCEEDED(hr)) {Sleep(static_cast<DWORD>(seconds)*1000);input->UnregisterCallback(token);}

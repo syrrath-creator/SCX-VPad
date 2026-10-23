@@ -15,3 +15,4 @@ $tokens = $null; $errors = $null
 [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'installer\gui\Desktop.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
 if ($errors.Count) { throw ($errors | Out-String) }
 Write-Output 'PASS: PowerShell operation wrapper syntax.'
+& (Join-Path $PSScriptRoot 'test-setup-identity.ps1')

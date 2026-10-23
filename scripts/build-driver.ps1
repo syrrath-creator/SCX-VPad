@@ -32,24 +32,20 @@ $libPaths = @(
     (Join-Path $kit.SdkRoot "Lib\$($kit.SdkVersion)\ucrt\x64"),
     (Join-Path $kit.SdkRoot "Lib\$($kit.SdkVersion)\um\x64")
 )
-$objectPath = Join-Path $OutputDirectory 'scxvpad.obj'
-$xusbObjectPath = Join-Path $OutputDirectory 'scxxusb.obj'
 $resourcePath = Join-Path $OutputDirectory 'scxvpad.res'
 $dllPath = Join-Path $OutputDirectory 'ScxVPad.dll'
-$compileArgs = @('/nologo','/c','/TC','/std:c17','/O2','/MT','/GS','/guard:cf','/analyze','/analyze:external-',
-    '/W4','/WX','/DWIN32_LEAN_AND_MEAN','/DUNICODE','/D_UNICODE',
-    '/DUMDF_VERSION_MAJOR=2','/DUMDF_VERSION_MINOR=25','/DUMDF_USING_NTSTATUS',
-    "/Fo$objectPath",(Join-Path $repoRoot 'driver\scxvpad.c')) +
-    ($includePaths | ForEach-Object { "/I$_" })
-& $kit.Cl @compileArgs
-if ($LASTEXITCODE -ne 0) { throw "C binding compilation failed ($LASTEXITCODE)." }
-$xusbCompileArgs = $compileArgs | ForEach-Object {
-    if ($_ -eq "/Fo$objectPath") { "/Fo$xusbObjectPath" }
-    elseif ($_ -eq (Join-Path $repoRoot 'driver\scxvpad.c')) { Join-Path $repoRoot 'driver\scxxusb.c' }
-    else { $_ }
+$objects = @()
+foreach ($source in @('scxvpad','scxxusb','scx_channel','scx_trace')) {
+    $objectPath = Join-Path $OutputDirectory "$source.obj"
+    $objects += $objectPath
+    $compileArgs = @('/nologo','/c','/TC','/std:c17','/O2','/MT','/GS','/guard:cf','/analyze','/analyze:external-',
+        '/W4','/WX','/DWIN32_LEAN_AND_MEAN','/DUNICODE','/D_UNICODE',
+        '/DUMDF_VERSION_MAJOR=2','/DUMDF_VERSION_MINOR=25','/DUMDF_USING_NTSTATUS',
+        "/Fo$objectPath",(Join-Path $repoRoot "driver\$source.c")) +
+        ($includePaths | ForEach-Object { "/I$_" })
+    & $kit.Cl @compileArgs
+    if ($LASTEXITCODE -ne 0) { throw "C binding compilation failed for $source ($LASTEXITCODE)." }
 }
-& $kit.Cl @xusbCompileArgs
-if ($LASTEXITCODE -ne 0) { throw "XUSB binding compilation failed ($LASTEXITCODE)." }
 $resourceArgs = @('/nologo',"/fo$resourcePath") +
     ($includePaths | ForEach-Object { "/I$_" }) + (Join-Path $repoRoot 'driver\ScxVPad.rc')
 & $kit.Rc @resourceArgs
@@ -58,8 +54,8 @@ $linkArgs = @('/nologo','/DLL','/MACHINE:X64','/SUBSYSTEM:WINDOWS,10.00',
     '/DYNAMICBASE','/NXCOMPAT','/HIGHENTROPYVA','/guard:cf','/CETCOMPAT',
     '/OPT:REF','/OPT:ICF','/INCREMENTAL:NO','/Brepro',
     "/DEF:$(Join-Path $repoRoot 'driver\ScxVPad.def')", "/OUT:$dllPath",
-    $objectPath,$xusbObjectPath,$resourcePath,$RustLibrary,$kit.WdfLibrary,
-    'kernel32.lib','ntdll.lib','advapi32.lib','userenv.lib','ws2_32.lib','bcrypt.lib') +
+    $resourcePath,$RustLibrary,$kit.WdfLibrary,
+    'kernel32.lib','ntdll.lib','advapi32.lib','userenv.lib','ws2_32.lib','bcrypt.lib') + $objects +
     ($libPaths | ForEach-Object { "/LIBPATH:$_" })
 & $kit.Link @linkArgs
 if ($LASTEXITCODE -ne 0) { throw "UMDF2 DLL linking failed ($LASTEXITCODE)." }

@@ -26,9 +26,9 @@ documented by these primary interoperability implementations (consulted
 
 Those projects retain their own licenses. No Linux or SDL implementation code
 was imported. Public Sony collections now use the byte-exact descriptors from
-the attributed Maestro profiles. The private SCX collection is feature-only,
-with a bounded cancellable feedback wait, so feedback is not a second input
-controller. Calibration remains synthesized from our normalized units and
+the attributed Maestro profiles. Sony has no private SCX HID collection since revision .24. Its authenticated
+input and feedback use a service-created sideband channel, so feedback is not
+a second input controller. Generic HID alone retains the SCX control collection. Calibration remains synthesized from our normalized units and
 pairing/HID serial identities are unique per SCX device. Firmware-information
 responses use the attributed compatibility tables because invalid type/version
 fields can make native game parsers abandon the Sony handshake. Protocol IDs
@@ -66,3 +66,25 @@ its capability. It is not isolation against a same-user process that can inspect
 the authorized client's memory. Token impersonation through the HID kernel bridge
 and a HID collection's zero-access handle are not treated as authorization.
 Reference: <https://learn.microsoft.com/en-us/windows-hardware/drivers/wdf/controlling-device-access>.
+
+On 2026-10-23 the DualSense input encoder was checked again against SDL's
+PS5StatePacket_t: the USB packet also includes a 32-bit packet sequence at
+bytes 12-15, a second sampling timer at 49-52 and USB-present bit 0x08 at 54
+(all including report ID). SCX now supplies both counters, derives the two
+simultaneous synthetic sampling times from InputState.timestamp_us, and marks
+the virtual USB link present even while controls are neutral. A real neutral
+USB packet with these populated fields is independently documented at
+<https://github.com/nondebug/dualsense/blob/main/README.md>.
+These are wire-format facts, not copied implementation code. This correction
+alone is not evidence of Tekken compatibility; that still requires a game test.
+2026-10-23 native calibration comparison:
+A live, isolated Maestro 1.10.0.1457 DualSense capture returned +/-8000 raw
+gyro references at +/-500 degrees/second; SCX .30 returned +/-1440 at +/-90.
+Both represent 16 raw units per degree/second. Revision .31 uses the observed
+reference range for Sony USB calibration, without changing motion encoding,
+bias or accelerometer units. A regression compares the captured feature bytes
+and checks unchanged scaling for positive/negative motion on all three axes.
+This is an isolated compatibility experiment, not a confirmed Tekken fix.
+Evidence: sony-protocol-20261023-145408-617-maestro-protocol.txt in the local
+Tekken diagnostic directory. HIDMaestro's calibration source is already
+covered by the MIT reference above; no private Sony SDK code is used.

@@ -1,5 +1,150 @@
 # Windows validation record
 
+## Revision 0.1.0.32 installed validation — 23 October 2026
+
+The successful Sony container policy below is now the default service path for
+all profiles. Xbox and Generic retain their previous container values. The
+experimental unique-container feature was removed; the separate ROOT diagnostic
+feature remains opt-in. Independent review found no change to authentication,
+public Sony identity, quotas, leases or transport. All 78 workspace all-target
+Rust tests pass, with rustfmt and clippy on all targets and warnings denied.
+
+- The release build passes MSVC C17 `/analyze /W4 /WX`, native C-to-Rust ABI
+  checks, both INF validations and catalog generation. The installed .32 DLL
+  and service match the release payload after accounting for local signing.
+  Upgrade verification confirms the service is running and the authorized
+  Windows account and existing device identity seed are preserved.
+- All eight installed integration suites pass from the normal Windows account:
+  Sony input/feedback, generic lifecycle, Xbox input/feedback, the four profile
+  security suites, and Sony multi-controller validation. The first seven passed
+  before the diagnostic-probe correction described below; the unchanged .32
+  driver, service and command-line client then passed the final multi test.
+- DS4 and DualSense pass HID input, native initialization/calibration and
+  identity checks, rumble/RGB feedback, feedback cancellation and motor stop.
+  Four generic devices have independent state, neutralization and lease cleanup.
+  The independent XInput consumer verifies Xbox input and rumble/stop.
+  The applicable ownership, capability, replay, bootstrap, cross-device and
+  restricted-client security checks pass.
+- Four DS5, four DS4, and mixed two-plus-two devices remain distinct in Windows
+  HID, Windows.Gaming.Input and GameInput v3. HID/WGI verify independent button,
+  stick and trigger markers; feedback stays isolated. Removing one device leaves
+  exactly three distinct peers and does not disrupt their state. The full multi
+  suite passed twice after correcting the external GameInput probe, including a
+  final run with all temporary diagnostics removed. All test devices were removed.
+- 32 Setup payload/argument/path/platform checks and 21 isolated replacement-
+  identity checks pass. The identity tests cover all 64 seed bits, invalid or
+  missing registry values, owner/path validation, service stop/write/verify/start
+  order, and failure without restarting on an unverified seed. They pass under
+  Windows PowerShell 5.1 and PowerShell 7. These are mocked installer checks,
+  not a separate fresh-PC GUI installation claim.
+
+The initial GameInput multi failures were a diagnostic-probe issue: its device
+callback requested an all-bits input-kind mask, including undefined kinds, and
+observed only one to three of four devices. The probe now requests the documented
+`GameInputKindGamepad` it actually verifies. This alone restored complete
+enumeration with the unchanged strict four-device expectations. Neutral startup,
+reader removal, a Steam-closed comparison, a newer GameInput runtime and a
+GameInput redistributable service restart had not fixed the earlier probe.
+These controls do not establish a Steam or driver incompatibility. GameInput's
+check here concerns distinct enumerated identity, not game input processing.
+
+Local evidence is retained in
+`scx-rust/validation/tekken-20261023/final32-regression/`: the seven individual
+successful suite logs, the original failed summary, and
+`sony-multi-exact-gamepad-kind.txt` / `sony-multi-final-clean.txt`. The final clean
+run uses the installed Gears GameInput v3 runtime without modifying the game.
+The controlled Tekken and subsequent physical-controller checks below preceded
+packaging and used the same successful container policy. No new end-to-end
+latency, universal game compatibility or long-duration stability claim follows
+from these tests.
+
+## Tekken container comparison — 23 October 2026
+
+On the installed 0.1.0.31 driver, the isolated service feature
+`sony-unique-container-test` restores the existing stable per-installation,
+profile and slot container scheme for Sony devices. It does not change the HID
+reports, namespace, public Sony identity, authorization or driver binary.
+
+The user confirmed that Tekken 8's menu accepted up/down/Cross in this variant,
+after the preceding system-container variant was detected but ignored input.
+The physical controller was off, DSX/SCX were closed and Steam Input remained
+off. The synthetic SCX fixture recorded 24 foreground-gated button pulses.
+Both the SWD parent and HID child were independently read back with the same
+unique per-device container, distinct from the former system-container sentinel.
+
+Evidence: `scx-rust/validation/tekken-20261023/ultra-unique-20261023-160941-823-*`
+and `ultra-investigation.json`. The service candidate SHA-256 was
+`76726A66D2E5637FA03C31C74DB2E368AC3FD7B0AE441B34063D78C66B12BC65`.
+The original service was restored and verified byte-for-byte after the test;
+the driver, owner and identity seed stayed unchanged, and no test devices
+remained. This is a positive controlled Tekken result, not a universal game
+compatibility claim.
+
+The subsequent SCX 2.1.2 Edge/Bluetooth to DualSense route ran for 600.014
+seconds and forwarded 294,147 samples with no route error, warning or haptic
+error. Two independent HID readers verified reports; shutdown was clean and
+the original service was restored. The user confirmed actual Tekken input and
+then reported that Gears also worked. Evidence:
+`ultra-unique-20261023-162139-750-route.json` and its sibling logs.
+The physical Edge remained present in this run, so the Gears report does not
+independently exclude direct physical selection or establish fresh rumble/touch
+results. No end-to-end latency result follows from these forwarding metrics.
+
+Earlier negative Maestro trials with SCX, legacy SCX and observed G2-shaped
+input packets did not establish a USB transport requirement. The successful
+SCX UMDF comparison now demonstrates that no new USB bus is required for this
+Tekken menu test. Do not infer that the historical Sony system-container
+workaround disabled WGI/GameInput: the records below show those APIs remained
+available under that workaround.
+
+## Revision 0.1.0.29 cleanup candidate — 15 October 2026
+
+Build and installed Windows validation completed on the development PC:
+
+- 68 workspace Rust tests pass, together with rustfmt and clippy on all targets
+  with warnings denied. The actual HID queue replaces the old unconnected queue
+  model; tests cover press/release order, failed-reader retention, queue-full
+  retry, replay/wraparound, timeout neutrality and four independent instances.
+- The no_std driver core links through the real native binding. MSVC C17
+  `/analyze /W4 /WX`, both INF validations and catalog generation pass.
+- Native C-to-Rust ABI checks exercise the actual storage layout, four queues
+  for each HID profile, bounds, replay, neutralization and feedback merging for
+  Xbox/DS4/DS5, including identical updates, unrelated LEDs, motor stop and
+  malformed/cross-profile updates. These ABI checks do not install the driver.
+- 32 Setup checks pass for the .29 payload. The seven Windows PowerShell 5.1
+  installer recovery tests and isolated GameInput mapping/recovery tests pass.
+- The public Sony descriptors/identities, container policy and functional
+  shared-channel offsets are retained. Generic auth-stage HID report 0x7c and
+  all permanent bring-up diagnostic writes are retired. Legacy diagnostic
+  helpers are not evidence of successful operation on this revision.
+
+- A coordinated UAC-approved upgrade from .28 to .29 completed successfully.
+  The installed DLL reports 0.1.0.29, the service is running, and the authorized
+  Windows account and device identity seed are preserved. The rollback package
+  was verified beforehand; automatic rollback was not exercised in this upgrade.
+- All eight installed integration suites pass from an unelevated client:
+  generic lifecycle, Sony input/feedback, Xbox input/feedback, four profile
+  security suites, and Sony multi-controller WGI/GameInput validation.
+- Four generic devices retain independent buttons, axes and triggers. Watchdog
+  neutralization, lease removal and continued input on sibling devices pass.
+  DS4/DualSense HID input, native configuration, identity/calibration, rumble/RGB
+  feedback, waiter cancellation and motor-stop delivery pass. Microsoft's
+  XInput consumer receives the Xbox state and returns rumble/stop correctly.
+- Restricted broad-user and same-owner low-integrity clients are denied.
+  Capability, bootstrap, cross-device, retired-capability and replay checks pass
+  on the applicable interfaces. Xbox's effective access-denial checks pass;
+  its interface does not support querying the ACL through the diagnostic API.
+- Four DS5, four DS4, and mixed two-plus-two fixtures each remain distinct in
+  Windows HID, Windows.Gaming.Input and GameInput v3. Buttons/axes/triggers and
+  feedback remain independent; removing one leaves exactly three working peers.
+  All owned test devices are removed afterward. The GameInput consumer uses
+  Gears' installed runtime, but this is an API test, not an in-game test.
+
+Physical controller forwarding, in-game behavior, long-duration stability and
+end-to-end latency have not been remeasured for .29. No performance percentage
+or new latency claim follows from the removed diagnostic stores. The published,
+game-tested .28 release remains unchanged and available for recovery.
+
 ## Preview 2 desktop installer — 15 October 2026
 
 The separate Setup EXE embeds the unchanged published 0.1.0.28 ZIP, SHA-256

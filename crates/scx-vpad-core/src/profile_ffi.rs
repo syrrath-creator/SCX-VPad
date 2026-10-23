@@ -215,6 +215,9 @@ pub unsafe extern "C" fn scx_vpad_parse_output_for_profile(
         Ok(p) => p,
         Err(e) => return e,
     };
+    if !matches!(p, Profile::DualShock4 | Profile::DualSense) {
+        return UNSUPPORTED;
+    }
     if !matches!(
         (p, length),
         (Profile::DualShock4, 32) | (Profile::DualSense, 48 | 63)

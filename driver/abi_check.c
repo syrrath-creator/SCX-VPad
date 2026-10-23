@@ -6,6 +6,81 @@
 
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "ABI check failed at line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 
+_Static_assert(sizeof(SCX_VPAD_HID_STATE) == 4248, "Rust state storage size");
+_Static_assert(_Alignof(SCX_VPAD_HID_STATE) == 4, "Rust state alignment");
+_Static_assert(offsetof(SCX_VPAD_HID_STATE, private_current) == 4120, "Rust current offset");
+
+/* Exercise exactly the FFI functions used by WDF, including unsuccessful reads,
+ * timeout/replay handling, four independent devices and output field merging. */
+static int runtime_check(void)
+{
+    struct { uint32_t before; SCX_VPAD_HID_STATE state; uint32_t after; } devices[4];
+    uint8_t packet[64] = {1,0,64,0}, expected[64], neutral = 0x5a;
+    uint8_t feedback[32], update[32], before[32], changed;
+    uint32_t profile, i, device, sequence;
+    for (profile = SCX_PROFILE_GENERIC_HID; profile <= SCX_PROFILE_DUALSENSE; ++profile) {
+        if (profile == SCX_PROFILE_XBOX360) continue;
+        memset(devices, 0xa5, sizeof(devices));
+        for (device = 0; device < 4; ++device) {
+            SCX_VPAD_HID_STATE *q = &devices[device].state;
+            CHECK(scx_vpad_hid_init(q, sizeof(*q) - 1, profile) == SCX_VPAD_INVALID_LENGTH);
+            CHECK(scx_vpad_hid_init(q, sizeof(*q), profile) == SCX_VPAD_OK);
+            CHECK(scx_vpad_neutral_report_for_profile(profile, expected, sizeof(expected)) == 0);
+            CHECK(memcmp(scx_vpad_hid_front(q), expected, scx_vpad_profile_report_size(profile)) == 0);
+            scx_vpad_hid_consume(q);
+            memset(packet, 0, sizeof(packet)); packet[0] = 1; packet[2] = 64; packet[24] = 8;
+            for (i = 0; i < 64; ++i) {
+                memcpy(packet + SCX_VPAD_INPUT_SEQUENCE_OFFSET, &i, sizeof(i));
+                packet[8] = (uint8_t)(1u << (device + i % 2));
+                CHECK(scx_vpad_hid_submit(q, packet, sizeof(packet), &neutral) == 0 && neutral == 0);
+            }
+            i = 64; memcpy(packet + SCX_VPAD_INPUT_SEQUENCE_OFFSET, &i, sizeof(i)); packet[8] = 0;
+            CHECK(scx_vpad_hid_submit(q, packet, sizeof(packet), &neutral) == SCX_VPAD_QUEUE_FULL);
+            CHECK(neutral == 0); /* failed submit does not change its output */
+            memcpy(before, scx_vpad_hid_front(q), 18);
+            CHECK(memcmp(before, scx_vpad_hid_front(q), 18) == 0); /* failed reader retains transition */
+            scx_vpad_hid_consume(q);
+            CHECK(scx_vpad_hid_submit(q, packet, sizeof(packet), &neutral) == 0 && neutral == 1);
+            CHECK(scx_vpad_hid_submit(q, packet, sizeof(packet), &neutral) == SCX_VPAD_INVALID_PACKET);
+            scx_vpad_hid_neutralize(q);
+            CHECK(memcmp(scx_vpad_hid_front(q), expected, scx_vpad_profile_report_size(profile)) == 0);
+            CHECK(scx_vpad_hid_submit(q, packet, sizeof(packet), &neutral) == SCX_VPAD_INVALID_PACKET);
+            scx_vpad_hid_consume(q); CHECK(scx_vpad_hid_front(q) == NULL);
+            CHECK(scx_vpad_hid_init(q, sizeof(*q), profile) == 0);
+            sequence = UINT32_MAX; memcpy(packet + 4, &sequence, 4);
+            CHECK(scx_vpad_hid_submit(q, packet, sizeof(packet), &neutral) == 0);
+            sequence = 0; memcpy(packet + 4, &sequence, 4);
+            CHECK(scx_vpad_hid_submit(q, packet, sizeof(packet), &neutral) == 0);
+            CHECK(devices[device].before == 0xa5a5a5a5u && devices[device].after == 0xa5a5a5a5u);
+        }
+    }
+    CHECK(scx_vpad_sequence_after(0, UINT32_MAX) == 1);
+    CHECK(scx_vpad_sequence_after(0x80000000u, 0) == 0);
+    for (profile = SCX_PROFILE_XBOX360; profile <= SCX_PROFILE_DUALSENSE; ++profile) {
+        CHECK(scx_vpad_feedback_init(profile, feedback, sizeof(feedback)) == 0);
+        CHECK(scx_vpad_feedback_init(profile, update, sizeof(update)) == 0);
+        update[8] = 1; update[12] = 123; update[14] = 45;
+        CHECK(scx_vpad_feedback_merge(feedback, 32, update, 32, &changed) == 0 && changed == 1);
+        CHECK(feedback[4] == 1 && feedback[12] == 123 && feedback[14] == 45);
+        CHECK(scx_vpad_feedback_merge(feedback, 32, update, 32, &changed) == 0 && changed == 0);
+        CHECK(feedback[4] == 1);
+        update[8] = 30; update[16] = 200; update[19] = 2; update[20] = 1; update[21] = 9; update[22] = 8;
+        CHECK(scx_vpad_feedback_merge(feedback, 32, update, 32, &changed) == 0 && changed == 1);
+        CHECK(feedback[4] == 2 && feedback[12] == 123 && feedback[14] == 45);
+        CHECK(feedback[16] == 200 && feedback[19] == 2 && feedback[20] == 1 && feedback[21] == 9 && feedback[22] == 8);
+        memcpy(before, feedback, sizeof(before)); update[23] = 1; changed = 0x5a;
+        CHECK(scx_vpad_feedback_merge(feedback, 32, update, 32, &changed) == SCX_VPAD_INVALID_PACKET);
+        CHECK(memcmp(before, feedback, 32) == 0 && changed == 0x5a);
+        update[23] = 0; update[24] = (uint8_t)(profile == 2 ? 3 : 2);
+        CHECK(scx_vpad_feedback_merge(feedback, 32, update, 32, &changed) == SCX_VPAD_INVALID_PACKET);
+        CHECK(memcmp(before, feedback, 32) == 0);
+        update[24] = (uint8_t)profile; update[8] = 1; update[12] = update[14] = 0;
+        CHECK(scx_vpad_feedback_merge(feedback, 32, update, 32, &changed) == 0 && changed == 1);
+        CHECK(feedback[4] == 3 && feedback[12] == 0 && feedback[14] == 0 && feedback[16] == 200);
+    }
+    return 0;
+}
+
 int main(void)
 {
     uint8_t frame[64] = {1,0,64,0};
@@ -71,6 +146,7 @@ int main(void)
     CHECK(depth == 0 && collections == 2);
     CHECK(inputBits[1] == 17u * 8u);
     CHECK(featureBits[0x7e] == 0);
+    CHECK(featureBits[0x78] == 0 && featureBits[0x79] == 0 && featureBits[0x7c] == 0 && featureBits[0x7d] == 0);
     CHECK(featureBits[0x7a] == 96u * 8u);
     CHECK(featureBits[0x7f] == 32u * 8u);
     {
@@ -142,6 +218,7 @@ int main(void)
         CHECK(scx_vpad_xusb_query(0x8000e00cu, request, 3, frame, 64, 42, 0, 6,
                                  output, sizeof(output), &length) != 0 && length == 0);
     }
-    puts("SCX native/Rust ABI, HID descriptor and XUSB wire checks: PASS");
+    CHECK(runtime_check() == 0);
+    puts("SCX native/Rust ABI, actual HID queue, feedback merge, descriptors and XUSB checks: PASS");
     return 0;
 }

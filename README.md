@@ -3,11 +3,18 @@
 An independently implemented Windows virtual-controller driver with a Rust core,
 a small UMDF2 binding, and a restricted Rust service for device management.
 
-**Development preview 2 — native driver 0.1.0.28.** Independently implemented architecture, with
+**Native driver 0.1.0.32 — Sony device identity update.** Independently implemented architecture, with
 attributed MIT Sony compatibility tables from HIDMaestro. This is an experimental
 driver and SDK, not a production-certified
 drop-in replacement. Its Windows validation and remaining compatibility gaps
 are recorded separately from protocol unit tests.
+
+Revision .32 assigns each Sony controller its own stable Windows container,
+using the installation seed, profile and service slot. The controlled Tekken 8
+comparison accepts input with this policy; the subsequent physical Edge route
+also received positive user reports for Tekken and Gears. It retains the
+version-1 data channel used by SCX 2.1.2 and the tested Rust queue/feedback core.
+See RELEASE-NOTES.md and VALIDATION.md for test scope and package status.
 
 ## Architecture
 
@@ -51,13 +58,20 @@ SCX calibration and per-device identities, plus attributed Sony USB compatibilit
 descriptors and firmware-information tables from HIDMaestro (see notices).
 Native USB audio, adaptive trigger effects, Bluetooth radio emulation, console
 pairing and Steam-controller output are not implemented. The generic profile has
-no rumble protocol. Revision 0.1.0.28 includes Windows Gaming Input and GameInput
-compatibility corrections, Sony initialization and mixed-output handling, plus
-ROOT-compatible Sony container metadata with distinct per-device identities.
-The tested Gears of War: E-Day setup recognizes PlayStation input and game rumble.
-Four Sony controllers (DS4, DS5 and mixed) pass independent WGI/GameInput v3 input,
-identity, rumble-isolation and partial-removal tests. See VALIDATION for scope and
-the single earlier transient that could not be reproduced in the recorded run.
+no rumble protocol. Revision 0.1.0.32 retains the Windows Gaming Input and
+GameInput compatibility corrections, Sony initialization and mixed-output
+handling. Sony devices now use distinct stable containers instead of the
+historical shared system-container workaround. Device identities remain stable
+for the same installation, profile and service slot; the graphical updater
+preserves the installation seed and authorized Windows account.
+The controlled Tekken 8 test accepts the virtual DualSense input; the subsequent
+physical Edge route also received a positive Gears of War: E-Day input report.
+Earlier Gears game-rumble evidence is retained separately in VALIDATION.md.
+Four Sony controllers (DS4, DS5 and mixed) pass distinct HID/WGI/GameInput v3
+identity checks, independent HID/WGI input, feedback isolation and partial
+removal. The final multi-controller test passed twice after correcting the
+external GameInput probe's input-kind filter; no driver workaround was needed
+for that probe issue. See VALIDATION.md for the exact scope and limitations.
 Do not assume universal game support from a protocol or enumeration test.
 
 ## Build
@@ -87,8 +101,8 @@ a file-hash manifest. It does not install anything or modify Windows trust.
 
 ### Recommended: Windows Setup EXE
 
-Download **[SCX-VPad-0.1.0.28-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.0-preview.2/SCX-VPad-0.1.0.28-Setup-x64.exe)**
-from the existing Preview 2 release. Its separate `Setup-SHA256SUMS.txt` asset
+Download **[SCX-VPad-0.1.0.32-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.0-preview.3/SCX-VPad-0.1.0.32-Setup-x64.exe)**
+from the Preview 3 release. Its separate `Setup-SHA256SUMS.txt` asset
 contains the EXE checksum. No ZIP extraction or terminal commands are needed.
 
 1. Close SCX and games. Start the EXE by double-clicking it from the Windows
@@ -98,10 +112,10 @@ contains the EXE checksum. No ZIP extraction or terminal commands are needed.
 3. Wait for the success message, then open SCX, select **SCX VPad** and connect.
    Restart Windows first if the installer requests it.
 
-The EXE installs the driver **and** its service using the unchanged, verified
-Preview 2 package. It includes German and English interfaces and works offline.
+The EXE installs the driver **and** its service using the verified Preview 3
+package. It includes German and English interfaces and works offline.
 If already installed, **Reinstall** replaces this revision and retains the
-authorized Windows account. Driver updates still require administrator approval;
+authorized Windows account and stable device identity seed. Driver updates still require administrator approval;
 ordinary controller connections do not. SCX application profiles are not changed.
 
 For removal, run the EXE again and choose **Uninstall**. Setup is not registered
@@ -173,12 +187,12 @@ wraps the Rust driver/service package; it does not rebuild or change them.
 Build from an already validated package and supply its independently verified hash:
 
 ```powershell
-./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.28-preview.2-windows-x64.zip -ExpectedSha256 ad7e32670e7110fe1a71a7b8601c2389d66b9b65b06b3197639801b006604cd2 -OutputDirectory ./artifacts/setup
-./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.28-preview.2-windows-x64.zip -BuildDirectory ./artifacts/setup
+./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.32-preview.3-windows-x64.zip -ExpectedSha256 $verifiedReleaseSha256 -OutputDirectory ./artifacts/setup
+./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.32-preview.3-windows-x64.zip -BuildDirectory ./artifacts/setup
 ```
 
-The published Setup is an additional Preview 2 asset. The original ZIP and tag
-are unchanged; see the release notes for the Setup source commit.
+The Setup and ZIP in Preview 3 contain the same verified native revision .32.
+Earlier preview releases remain available as historical downloads.
 
 ## License and commercial distribution
 

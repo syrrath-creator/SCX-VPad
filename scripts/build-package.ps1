@@ -35,6 +35,12 @@ $files = [ordered]@{
     'THIRD-PARTY-NOTICES.txt' = 'THIRD-PARTY-NOTICES.txt'
 }
 Get-ChildItem -LiteralPath (Join-Path $root 'licenses') -File | ForEach-Object { $files['licenses/' + $_.Name] = 'licenses/' + $_.Name }
+$driverVersion = (Get-Item -LiteralPath (Join-Path $root 'target/driver/x64/ScxVPad.dll')).VersionInfo.FileVersion
+if ($driverVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'Missing valid native driver file version.' }
+foreach ($infName in @('scxvpad.inf','scxxusb.inf')) {
+    $inf = Get-Content -LiteralPath (Join-Path $root "target/driver/x64/$infName") -Raw
+    if ($inf -notmatch ('(?m)^DriverVer=[^,]+,' + [regex]::Escape($driverVersion) + '\s*$')) { throw 'INF/DLL version mismatch.' }
+}
 $manifest = @()
 foreach ($item in $files.GetEnumerator()) {
     $source = Join-Path $root $item.Value
@@ -44,7 +50,7 @@ foreach ($item in $files.GetEnumerator()) {
     Copy-Item -LiteralPath $source -Destination $target
     $manifest += [ordered]@{ path=$item.Key; bytes=(Get-Item -LiteralPath $target).Length; sha256=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash }
 }
-[ordered]@{ product='SCX-VPad'; version='0.1.0'; driverVersion='0.1.0.28'; platform='windows-x64'; minimumBuild=22000; files=$manifest } |
+[ordered]@{ product='SCX-VPad'; version='0.1.0'; driverVersion=$driverVersion; platform='windows-x64'; minimumBuild=22000; files=$manifest } |
     ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Destination 'package-manifest.json') -Encoding utf8
 Write-Output "Packaged unsigned development binaries: $Destination"
 Write-Output 'The package is signed locally by its explicit administrative installer. No private key is distributed.'

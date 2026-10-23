@@ -2,16 +2,8 @@
  * Private Windows protocol compatibility is experimental until live tested.
  * Copyright (c) 2026 SCX. See LICENSE.
  */
-#define WIN32_NO_STATUS
-#include <windows.h>
-#undef WIN32_NO_STATUS
-#pragma warning(push)
-#pragma warning(disable: 4324 5104 6553)
-#include <wdf.h>
-#pragma warning(pop)
-#include <stdint.h>
-#include <string.h>
-#include "scx_vpad.h"
+#include "scx_windows.h"
+#include "scx_status.h"
 
 #define SCX_X_SUBMIT 0x0022a000u
 #define SCX_X_INFO 0x00226004u
@@ -41,7 +33,6 @@ typedef struct _SCX_XUSB {
     WDFQUEUE FeedbackWaiters;
     WDFQUEUE InputWaiters;
     WDFWORKITEM InitialInput;
-    uint32_t Diagnostics[10]; /* Bounded counters/IOCTL metadata, no input data. */
 } SCX_XUSB;
 typedef struct _SCX_FILE {
     BOOLEAN IsControl;
@@ -104,7 +95,6 @@ static void ScxXDeliverInput(SCX_XUSB *ctx)
         if (NT_SUCCESS(status)) {
             reader->InputPacket = ctx->Packet;
             reader->HasSnapshot = TRUE;
-            ++ctx->Diagnostics[8];
         }
         WdfRequestComplete(request, status);
     }
@@ -146,8 +136,8 @@ static NTSTATUS ScxXSubmit(SCX_XUSB *ctx, const uint8_t *input, size_t length)
     const uint8_t neutralControls[12] = {0};
     BOOLEAN neutral, changed;
     if (scx_vpad_validate_input(input, length) != 0) return STATUS_INVALID_PARAMETER;
-    memcpy(&sequence, input + 4, sizeof(sequence));
-    if (ctx->HasSequence && (int32_t)(sequence - ctx->LastSequence) <= 0)
+    memcpy(&sequence, input + SCX_VPAD_INPUT_SEQUENCE_OFFSET, sizeof(sequence));
+    if (ctx->HasSequence && !scx_vpad_sequence_after(sequence, ctx->LastSequence))
         return STATUS_INVALID_PARAMETER;
     if (scx_vpad_xusb_state_report(ctx->Input, 64, 0, 0, before, sizeof(before)) != 0 ||
         scx_vpad_xusb_state_report(input, length, 0, 0, after, sizeof(after)) != 0)
@@ -174,24 +164,18 @@ static NTSTATUS ScxXSubmit(SCX_XUSB *ctx, const uint8_t *input, size_t length)
 
 static NTSTATUS ScxXOutput(SCX_XUSB *ctx, const uint8_t *input, size_t length)
 {
-    uint8_t decoded[32], next[32];
-    uint32_t fields, previousFields, sequence;
+    uint8_t decoded[SCX_VPAD_FEEDBACK_PACKET_SIZE], changed;
+    uint32_t fields;
     WDFREQUEST waiter;
-    if (scx_vpad_xusb_decode_output(input, length, decoded, sizeof(decoded)) != 0)
-        return STATUS_INVALID_PARAMETER;
-    memcpy(next, ctx->Feedback, sizeof(next));
-    memcpy(&fields, decoded + 8, sizeof(fields));
-    memcpy(&previousFields, next + 8, sizeof(previousFields));
-    previousFields |= fields;
-    memcpy(next + 8, &previousFields, sizeof(previousFields));
-    if (fields & 1u) memcpy(next + 12, decoded + 12, 4);
-    if (fields & 4u) { next[19] = decoded[19]; ctx->Led = input[1]; }
-    if (memcmp(next, ctx->Feedback, sizeof(next)) == 0) return STATUS_SUCCESS;
-    memcpy(&sequence, next + 4, sizeof(sequence)); ++sequence;
-    memcpy(next + 4, &sequence, sizeof(sequence));
-    memcpy(ctx->Feedback, next, sizeof(next));
+    NTSTATUS status = ScxStatus(scx_vpad_xusb_decode_output(input, length, decoded, sizeof(decoded)));
+    if (!NT_SUCCESS(status)) return status;
+    status = ScxStatus(scx_vpad_feedback_merge(ctx->Feedback, sizeof(ctx->Feedback), decoded, sizeof(decoded), &changed));
+    if (!NT_SUCCESS(status)) return status;
+    memcpy(&fields, decoded + SCX_VPAD_FEEDBACK_FIELDS_OFFSET, sizeof(fields));
+    if (fields & SCX_VPAD_FEEDBACK_PLAYER_VALID) ctx->Led = input[1];
+    if (!changed) return STATUS_SUCCESS;
     while (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(ctx->FeedbackWaiters, &waiter))) {
-        NTSTATUS status = ScxXCopy(waiter, ctx->Feedback, sizeof(ctx->Feedback));
+        status = ScxXCopy(waiter, ctx->Feedback, sizeof(ctx->Feedback));
         WdfRequestComplete(waiter, status);
     }
     return STATUS_SUCCESS;
@@ -225,11 +209,10 @@ void ScxXControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength,
         status = actual == 0 ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
         break;
     case SCX_X_DIAGNOSTICS:
-        ctx->Diagnostics[9] = ctx->Packet;
-        status = actual == 0 ? ScxXCopy(request, ctx->Diagnostics, sizeof(ctx->Diagnostics)) : STATUS_INVALID_PARAMETER;
+        /* Legacy bring-up counters are no longer collected in production. */
+        status = STATUS_NOT_SUPPORTED;
         break;
     case XUSB_WAIT_INPUT:
-        ++ctx->Diagnostics[1];
         /* WGI uses {version LE16, index, flags}; observed flags 2 on startup
          * and 3 after the first input-resumed completion on Windows 26200.
          * Also retain the empty and version/index diagnostic request forms.
@@ -266,7 +249,7 @@ void ScxXControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength,
         status = ScxXSubmit(ctx, input, actual); break;
     case SCX_X_INFO:
         if (actual != 0) { status = STATUS_INVALID_PARAMETER; break; }
-        if (scx_vpad_get_info_for_profile(2, output, sizeof(output)) != 0) {
+        if (scx_vpad_get_info_for_profile(SCX_PROFILE_XBOX360, output, sizeof(output)) != 0) {
             status = STATUS_NOT_SUPPORTED; break;
         }
         status = ScxXCopy(request, output, 32); break;
@@ -277,7 +260,7 @@ void ScxXControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength,
         if (actual == 4) {
             uint32_t seen, current;
             ULONG waiting;
-            memcpy(&seen, input, 4); memcpy(&current, ctx->Feedback + 4, 4);
+            memcpy(&seen, input, 4); memcpy(&current, ctx->Feedback + SCX_VPAD_FEEDBACK_SEQUENCE_OFFSET, 4);
             if (seen != current) { status = ScxXCopy(request, ctx->Feedback, 32); break; }
             (void)WdfIoQueueGetState(ctx->FeedbackWaiters, &waiting, NULL);
             if (waiting >= 64) { status = STATUS_DEVICE_BUSY; break; }
@@ -286,40 +269,14 @@ void ScxXControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength,
         } else status = STATUS_INVALID_PARAMETER;
         break;
     case XUSB_SET_STATE:
-        ++ctx->Diagnostics[2];
         status = ScxXOutput(ctx, input, actual);
-        if (NT_SUCCESS(status)) ++ctx->Diagnostics[3];
-        else {
-            /* At most eight bytes of this device's public output command;
-             * no input packets, producer capability or client memory. */
-            ctx->Diagnostics[4] = code;
-            ctx->Diagnostics[5] = (uint32_t)actual;
-            ctx->Diagnostics[6] = ctx->Diagnostics[7] = 0;
-            if (input != NULL) memcpy(&ctx->Diagnostics[6], input, actual < 8 ? actual : 8);
-        }
         break;
     default:
-        if (scx_vpad_xusb_query(code, input, actual, ctx->Input, 64, ctx->Packet,
-                ctx->PlayerIndex, ctx->Led, output, sizeof(output), &outputLength) == 0)
-            status = ScxXCopy(request, output, outputLength);
-        else {
-            status = STATUS_NOT_SUPPORTED;
-            ctx->Diagnostics[4] = code;
-            ctx->Diagnostics[5] = (uint32_t)actual;
-            ctx->Diagnostics[6] = (uint32_t)outLength;
-            if (ctx->Diagnostics[7] == 0) ctx->Diagnostics[7] = code;
-        }
+        status = ScxStatus(scx_vpad_xusb_query(code, input, actual, ctx->Input, sizeof(ctx->Input), ctx->Packet,
+            ctx->PlayerIndex, ctx->Led, output, sizeof(output), &outputLength));
+        if (NT_SUCCESS(status)) status = ScxXCopy(request, output, outputLength);
         break;
     }
-    if (code == XUSB_WAIT_INPUT && !NT_SUCCESS(status)) {
-        /* Public request framing only: never retain controller reports. */
-        ctx->Diagnostics[4] = code;
-        ctx->Diagnostics[5] = (uint32_t)actual;
-        ctx->Diagnostics[6] = (uint32_t)outLength | (file == NULL ? 0x80000000u : 0u);
-        ctx->Diagnostics[7] = 0;
-        if (input != NULL) memcpy(&ctx->Diagnostics[7], input, actual < 4 ? actual : 4);
-    }
-    ++ctx->Diagnostics[0];
     WdfRequestComplete(request, status);
 }
 
@@ -371,7 +328,8 @@ NTSTATUS ScxXboxDeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     if (!NT_SUCCESS(status)) return status;
     ctx = ScxXContext(device);
     ScxXNeutral(ctx->Input);
-    ctx->Feedback[0] = 1; ctx->Feedback[2] = 32; ctx->Feedback[24] = 2;
+    status = ScxStatus(scx_vpad_feedback_init(SCX_PROFILE_XBOX360, ctx->Feedback, sizeof(ctx->Feedback)));
+    if (!NT_SUCCESS(status)) return status;
     WDF_DEVICE_PROPERTY_DATA_INIT(&property, &ScxPlayerKey);
     status = WdfDeviceQueryPropertyEx(device, &property, sizeof(player), &player, &required, &propertyType);
     if (NT_SUCCESS(status) && (propertyType != DEVPROP_TYPE_UINT32 || required != sizeof(player) || player > 3))

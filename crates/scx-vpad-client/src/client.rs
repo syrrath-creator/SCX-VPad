@@ -55,12 +55,7 @@ impl VirtualPad {
                 lease: 0,
             },
         )?;
-        if response.lease == 0
-            || !response
-                .instance
-                .to_ascii_uppercase()
-                .starts_with("SWD\\SCXVPAD\\")
-        {
+        if response.lease == 0 || !valid_device_instance(&response.instance, profile) {
             return Err(fail("invalid device lease"));
         }
         // New services provision a private channel before PnP creation. Old
@@ -84,11 +79,12 @@ impl VirtualPad {
         };
         let deadline = Instant::now() + Duration::from_secs(10);
         let (device, control_path) = loop {
-            if let Some(endpoint) = find_endpoint(
-                &response.instance,
-                channel.is_none(),
-                profile == Profile::Xbox360,
-            )? {
+            let endpoint = if channel.is_some() {
+                find_sony_metadata_endpoint(&response.instance)?
+            } else {
+                find_endpoint(&response.instance, true, profile == Profile::Xbox360)?
+            };
+            if let Some(endpoint) = endpoint {
                 break endpoint;
             }
             if Instant::now() >= deadline {
@@ -137,7 +133,9 @@ impl VirtualPad {
     pub fn instance_id(&self) -> &str {
         &self.instance
     }
-    /// Read-only per-device I/O counters for compatibility diagnostics.
+    /// Legacy bring-up counters for older driver revisions. Revision .29 no
+    /// longer collects these: XUSB/HID queries fail and Sony reserved words
+    /// stay zero. Zero values must not be interpreted as a clean diagnostic run.
     pub fn consumer_diagnostics(&self) -> io::Result<Vec<u32>> {
         if let Some(c) = &self.channel {
             return Ok(c
@@ -192,7 +190,8 @@ impl VirtualPad {
         }
         crate::security::descriptor(&self.device)
     }
-    /// Bounded diagnostic stages only; no token/SID or credential is exposed.
+    /// Legacy stages for older drivers; no token/SID/credential is exposed.
+    /// Revision .29 removes them (HID query fails; Sony reserved words are zero).
     pub fn authorization_diagnostic(&self) -> io::Result<String> {
         if let Some(c) = &self.channel {
             let b = c.bytes::<12>(256);
@@ -694,6 +693,28 @@ fn find_endpoint(
     control: bool,
     xusb: bool,
 ) -> io::Result<Option<(Handle, String)>> {
+    let access = if control || xusb {
+        GENERIC_READ | GENERIC_WRITE
+    } else {
+        GENERIC_READ
+    };
+    find_endpoint_with_access(instance, control, xusb, access)
+}
+
+fn find_sony_metadata_endpoint(instance: &str) -> io::Result<Option<(Handle, String)>> {
+    // Sony input/feedback use the authenticated shared channel. Holding a
+    // GENERIC_READ game-HID handle here needlessly conflicts with consumers
+    // whose sharing mode excludes other readers. A zero-access handle is
+    // sufficient for HID caps and keeps report I/O entirely off this path.
+    find_endpoint_with_access(instance, false, false, 0)
+}
+
+fn find_endpoint_with_access(
+    instance: &str,
+    control: bool,
+    xusb: bool,
+    access: u32,
+) -> io::Result<Option<(Handle, String)>> {
     let guid = if xusb {
         if control {
             &XUSB_CONTROL_GUID
@@ -788,11 +809,7 @@ fn find_endpoint(
         let Ok(h) = Handle::new(unsafe {
             CreateFileW(
                 path,
-                if control || xusb {
-                    GENERIC_READ | GENERIC_WRITE
-                } else {
-                    GENERIC_READ
-                },
+                access,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 ptr::null(),
                 OPEN_EXISTING,
@@ -855,11 +872,11 @@ impl FeedbackReader {
         } else {
             None
         };
-        let device = find_collection(
-            pad.instance_id(),
-            channel.is_none(),
-            pad.profile == Profile::Xbox360,
-        )?
+        let device = if channel.is_some() {
+            find_sony_metadata_endpoint(pad.instance_id())?.map(|(handle, _)| handle)
+        } else {
+            find_collection(pad.instance_id(), true, pad.profile == Profile::Xbox360)?
+        }
         .ok_or_else(|| fail("control HID collection unavailable"))?;
         let feature_wait = if channel.is_none() && pad.profile != Profile::Xbox360 {
             let mut preparsed = 0;

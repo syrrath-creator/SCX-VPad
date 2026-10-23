@@ -2,28 +2,10 @@
  * Original UMDF2 binding. Windows owns PnP, HID collection routing and request
  * cancellation; Rust owns the byte protocol and the HID descriptor/encoder.
  */
-#define WIN32_NO_STATUS
-#pragma warning(push)
-#pragma warning(disable: 6553) /* Windows SDK RegOpenKeyEx SAL annotation. */
-#include <windows.h>
-#pragma warning(pop)
-#undef WIN32_NO_STATUS
-#pragma warning(push)
-/* WDK 2.25 intentionally uses aligned structures and its legacy assert macro. */
-#pragma warning(disable: 4324 5104 6553)
-#include <wdf.h>
-#include <hidport.h>
-#pragma warning(pop)
-#include <stdint.h>
-#include <string.h>
-#include "scx_vpad.h"
-
-#define SCX_REPORT_BYTES 64u
-#define SCX_FRAME_BYTES 64u
-#define SCX_RING_SIZE 64u
-#define SCX_FEATURE_SUBMIT 0x7au
-#define SCX_FEATURE_INFO 0x7fu
-#define SCX_FEEDBACK_REPORT 0x7du
+#include "scx_device.h"
+#include "scx_channel.h"
+#include "scx_status.h"
+#include "scx_trace.h"
 #define SCX_STALE_MS 500ull
 
 static const DEVPROPKEY ScxProfileKey = {
@@ -32,48 +14,9 @@ static const DEVPROPKEY ScxProfileKey = {
 static const DEVPROPKEY ScxIdentityKey = {
     {0x19f81049,0x3679,0x40f2,{0x96,0x89,0x2a,0x2f,0x61,0xf8,0xbd,0x29}}, 3
 };
-static const DEVPROPKEY ScxBootstrapKey = {
+const DEVPROPKEY ScxBootstrapKey = {
     {0x19f81049,0x3679,0x40f2,{0x96,0x89,0x2a,0x2f,0x61,0xf8,0xbd,0x29}}, 6
 };
-
-typedef struct _SCX_DEVICE {
-    HANDLE ChannelMap, ChannelInput, ChannelDone, ChannelFeedback, ChannelStop, ChannelThread;
-    volatile LONG *ChannelWords;
-    WDFQUEUE Reads;
-    WDFQUEUE FeedbackWaiters;
-    WDFTIMER Watchdog;
-    HID_DESCRIPTOR Hid;
-    const uint8_t *Descriptor;
-    size_t DescriptorLength;
-    size_t ReportLength;
-    uint32_t Profile;
-    uint64_t InstanceIdentity;
-    USHORT VendorId;
-    USHORT ProductId;
-    USHORT ProductVersion;
-    uint8_t Reports[SCX_RING_SIZE][SCX_REPORT_BYTES];
-    size_t ReportSizes[SCX_RING_SIZE];
-    uint8_t Current[SCX_REPORT_BYTES];
-    uint8_t Neutral[SCX_REPORT_BYTES];
-    uint8_t Feedback[33];
-    uint32_t DeliveredFeedbackSequence;
-    ULONG Head;
-    ULONG Count;
-    uint32_t LastSequence;
-    ULONGLONG LastSubmitMs;
-    BOOLEAN HasSequence;
-    BOOLEAN WatchdogArmed;
-    BOOLEAN Online;
-    uint8_t Capability[32];
-    BOOLEAN CapabilityLoaded;
-    uint32_t AuthStage;
-    uint32_t AuthError;
-    uint32_t AuthRequestorMode;
-    uint32_t OutputDiagnostic[8]; /* Counts/length/flags only; no report payload. */
-} SCX_DEVICE;
-WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(SCX_DEVICE, ScxContext)
-
-#include "scx_trace.h"
 
 DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD ScxDeviceAdd;
@@ -130,7 +73,7 @@ static NTSTATUS ScxReadProducerCapability(WDFDEVICE device, SCX_DEVICE *ctx)
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS ScxAuthorizeProducer(SCX_DEVICE *ctx, WDFREQUEST request, const uint8_t *capability)
+static NTSTATUS ScxAuthorizeProducer(SCX_DEVICE *ctx, const uint8_t *capability)
 {
     volatile uint8_t difference = 0;
     unsigned index;
@@ -138,10 +81,7 @@ static NTSTATUS ScxAuthorizeProducer(SCX_DEVICE *ctx, WDFREQUEST request, const 
      * are visited before any sequence/report/heartbeat state can be changed. */
     for (index = 0; index < sizeof(ctx->Capability); ++index)
         difference |= capability[index] ^ ctx->Capability[index];
-    ctx->AuthRequestorMode = (uint32_t)(request != NULL ? WdfRequestGetRequestorMode(request) : UserMode);
-    ctx->AuthStage = ctx->CapabilityLoaded && difference == 0 ? 9u : 8u;
-    ctx->AuthError = ctx->AuthStage == 9u ? 0 : ERROR_ACCESS_DENIED;
-    return ctx->AuthStage == 9u ? STATUS_SUCCESS : STATUS_ACCESS_DENIED;
+    return ctx->CapabilityLoaded && difference == 0 ? STATUS_SUCCESS : STATUS_ACCESS_DENIED;
 }
 
 void ScxDestroy(WDFOBJECT object)
@@ -150,7 +90,7 @@ void ScxDestroy(WDFOBJECT object)
     SecureZeroMemory(ctx->Capability, sizeof(ctx->Capability));
     ctx->CapabilityLoaded = FALSE;
 }
-static NTSTATUS ScxReadCreationProperty(WDFDEVICE device, const DEVPROPKEY *key,
+NTSTATUS ScxReadCreationProperty(WDFDEVICE device, const DEVPROPKEY *key,
                                         void *value, ULONG size, DEVPROPTYPE expected)
 {
     WDF_DEVICE_PROPERTY_DATA property;
@@ -159,7 +99,8 @@ static NTSTATUS ScxReadCreationProperty(WDFDEVICE device, const DEVPROPKEY *key,
     NTSTATUS status;
     WDF_DEVICE_PROPERTY_DATA_INIT(&property, key);
     status = WdfDeviceQueryPropertyEx(device, &property, size, value, &required, &actual);
-    /* Backward-compatible generic creation without custom properties only. */
+    /* Optional profile/identity defaults are allowed for generic HID. The
+     * separately verified producer bootstrap/capability is always mandatory. */
     if (status == STATUS_OBJECT_NAME_NOT_FOUND || status == STATUS_NOT_FOUND ||
         status == STATUS_OBJECT_PATH_NOT_FOUND) return STATUS_SUCCESS;
     if (!NT_SUCCESS(status)) return status;
@@ -187,49 +128,20 @@ static NTSTATUS ScxCopy(WDFREQUEST request, const void *source, size_t length)
 static void ScxDrain(SCX_DEVICE *ctx)
 {
     WDFREQUEST read;
-    while (ctx->Count != 0 &&
+    const uint8_t *report;
+    while ((report = scx_vpad_hid_front(&ctx->Input)) != NULL &&
            NT_SUCCESS(WdfIoQueueRetrieveNextRequest(ctx->Reads, &read))) {
-        NTSTATUS status = ScxCopy(read, ctx->Reports[ctx->Head], ctx->ReportSizes[ctx->Head]);
+        NTSTATUS status = ScxCopy(read, report, ctx->ReportLength);
         /* A malformed reader must not consume a queued button transition. */
-        if (NT_SUCCESS(status)) {
-            ctx->Head = (ctx->Head + 1u) % SCX_RING_SIZE;
-            --ctx->Count;
-        }
+        if (NT_SUCCESS(status)) scx_vpad_hid_consume(&ctx->Input);
+        else ScxTraceRequest(ctx, read, IOCTL_HID_READ_REPORT, 0, ctx->ReportLength, status);
         WdfRequestComplete(read, status);
     }
 }
 
-static void ScxDeliverFeedback(SCX_DEVICE *ctx)
-{
-    ULONG remaining = 0;
-    WDFREQUEST request;
-    uint32_t sequence;
-    BOOLEAN delivered = FALSE;
-    uint8_t report[33];
-    memcpy(&sequence, ctx->Feedback + 5, sizeof(sequence));
-    if (sequence == ctx->DeliveredFeedbackSequence) return;
-    memcpy(report, ctx->Feedback, sizeof(report));
-    report[0] = 0x78;
-    (void)WdfIoQueueGetState(ctx->FeedbackWaiters, &remaining, NULL);
-    while (remaining-- != 0 && NT_SUCCESS(WdfIoQueueRetrieveNextRequest(ctx->FeedbackWaiters, &request))) {
-        NTSTATUS status = ScxCopy(request, report, sizeof(report));
-        if (NT_SUCCESS(status)) delivered = TRUE;
-        WdfRequestComplete(request, status);
-    }
-    /* One feedback stream per owned device, as with the previous input-report
-     * channel. Preserve a change until delivered; broadcast to current waiters.
-     * A timed-out or malformed request must not consume the pending update. */
-    if (delivered) ctx->DeliveredFeedbackSequence = sequence;
-}
-
 static void ScxNeutralize(SCX_DEVICE *ctx)
 {
-    /* Safety takes precedence over stale queued presses after producer loss. */
-    ctx->Head = 0;
-    ctx->Count = 1;
-    memcpy(ctx->Current, ctx->Neutral, ctx->ReportLength);
-    memcpy(ctx->Reports[0], ctx->Neutral, ctx->ReportLength);
-    ctx->ReportSizes[0] = ctx->ReportLength;
+    scx_vpad_hid_neutralize(&ctx->Input);
     ScxDrain(ctx);
 }
 
@@ -250,35 +162,18 @@ void ScxWatchdog(WDFTIMER timer)
     (void)WdfTimerStart(timer, WDF_REL_TIMEOUT_IN_MS(250));
 }
 
-static NTSTATUS ScxAcceptPacket(SCX_DEVICE *ctx, WDFREQUEST request, const uint8_t *bytes)
+NTSTATUS ScxAcceptPacket(SCX_DEVICE *ctx, const uint8_t *bytes)
 {
-    uint8_t report[SCX_REPORT_BYTES], neutral;
-    uint32_t sequence;
+    uint8_t neutral;
     NTSTATUS status;
     if (!ctx->Online) return STATUS_DEVICE_NOT_READY;
-    if (bytes[0] != SCX_FEATURE_SUBMIT) return STATUS_INVALID_PARAMETER;
-    status = ScxAuthorizeProducer(ctx, request, bytes + 1);
+    if (bytes[0] != SCX_VPAD_SUBMIT_FEATURE_ID) return STATUS_INVALID_PARAMETER;
+    status = ScxAuthorizeProducer(ctx, bytes + SCX_VPAD_SUBMIT_CAPABILITY_OFFSET);
     if (!NT_SUCCESS(status)) return status;
-    if (scx_vpad_encode_report_for_profile(ctx->Profile, bytes + 33, SCX_FRAME_BYTES,
-                                          report, sizeof(report)) != 0)
-        return STATUS_INVALID_PARAMETER;
-    if (scx_vpad_input_is_neutral(bytes + 33, SCX_FRAME_BYTES, &neutral) != 0)
-        return STATUS_INVALID_PARAMETER;
-    memcpy(&sequence, bytes + 37, sizeof(sequence));
-    /* Wrapping sequence arithmetic; reject duplicates and old/replayed frames. */
-    if (ctx->HasSequence && (int32_t)(sequence - ctx->LastSequence) <= 0)
-        return STATUS_INVALID_PARAMETER;
-    if (memcmp(report, ctx->Current, ctx->ReportLength) != 0) {
-        ScxDrain(ctx);
-        if (ctx->Count == SCX_RING_SIZE) return STATUS_DEVICE_BUSY;
-        memcpy(ctx->Reports[(ctx->Head + ctx->Count) % SCX_RING_SIZE],
-               report, ctx->ReportLength);
-        ctx->ReportSizes[(ctx->Head + ctx->Count) % SCX_RING_SIZE] = ctx->ReportLength;
-        ++ctx->Count;
-        memcpy(ctx->Current, report, ctx->ReportLength);
-    }
-    ctx->LastSequence = sequence;
-    ctx->HasSequence = TRUE;
+    ScxDrain(ctx);
+    status = ScxStatus(scx_vpad_hid_submit(&ctx->Input,
+        bytes + SCX_VPAD_SUBMIT_INPUT_OFFSET, SCX_VPAD_INPUT_PACKET_SIZE, &neutral));
+    if (!NT_SUCCESS(status)) return status;
     ctx->LastSubmitMs = GetTickCount64();
     if (!ctx->WatchdogArmed && !neutral) {
         ctx->WatchdogArmed = TRUE;
@@ -292,8 +187,6 @@ static NTSTATUS ScxAcceptPacket(SCX_DEVICE *ctx, WDFREQUEST request, const uint8
     return STATUS_SUCCESS;
 }
 
-#include "scx_channel.h"
-
 static NTSTATUS ScxSubmit(SCX_DEVICE *ctx, WDFREQUEST request, size_t reportId)
 {
     WDFMEMORY memory;
@@ -301,12 +194,12 @@ static NTSTATUS ScxSubmit(SCX_DEVICE *ctx, WDFREQUEST request, size_t reportId)
     const uint8_t *bytes;
     NTSTATUS status;
     /* Sony game-facing HID never accepts SCX transport packets. */
-    if (ctx->Profile != 1 || reportId != SCX_FEATURE_SUBMIT) return STATUS_ACCESS_DENIED;
+    if (ctx->Profile != SCX_PROFILE_GENERIC_HID || reportId != SCX_VPAD_SUBMIT_FEATURE_ID) return STATUS_ACCESS_DENIED;
     status = WdfRequestRetrieveInputMemory(request, &memory);
     if (!NT_SUCCESS(status)) return status;
     bytes = (const uint8_t *)WdfMemoryGetBuffer(memory, &length);
-    if (length != SCX_FRAME_BYTES + 33u) return STATUS_INVALID_BUFFER_SIZE;
-    status = ScxAcceptPacket(ctx, request, bytes);
+    if (length != SCX_VPAD_HID_FEATURE_REPORT_SIZE) return STATUS_INVALID_BUFFER_SIZE;
+    status = ScxAcceptPacket(ctx, bytes);
     if (NT_SUCCESS(status)) WdfRequestSetInformation(request, length);
     return status;
 }
@@ -318,7 +211,7 @@ static NTSTATUS ScxSetFeature(SCX_DEVICE *ctx, WDFREQUEST request, size_t report
     size_t length;
     uint32_t result;
     NTSTATUS status;
-    if (ctx->Profile == 1) return ScxSubmit(ctx, request, reportId);
+    if (ctx->Profile == SCX_PROFILE_GENERIC_HID) return ScxSubmit(ctx, request, reportId);
     if (!ctx->Online) return STATUS_DEVICE_NOT_READY;
     status = WdfRequestRetrieveInputMemory(request, &memory);
     if (!NT_SUCCESS(status)) return status;
@@ -326,8 +219,7 @@ static NTSTATUS ScxSetFeature(SCX_DEVICE *ctx, WDFREQUEST request, size_t report
     if (length == 0 || reportId > 255 || bytes[0] != (uint8_t)reportId)
         return STATUS_INVALID_PARAMETER;
     result = scx_vpad_validate_configuration_feature(ctx->Profile, bytes[0], length);
-    if (result == SCX_VPAD_INVALID_LENGTH) return STATUS_INVALID_BUFFER_SIZE;
-    if (result != SCX_VPAD_OK) return STATUS_ACCESS_DENIED;
+    if (result != SCX_VPAD_OK) return ScxStatus(result);
     /* Native Sony consumers configure the radio during initialization. There
      * is no radio in this virtual USB endpoint. Acknowledge only these known,
      * descriptor-sized commands; never dispatch them to the physical source,
@@ -336,65 +228,47 @@ static NTSTATUS ScxSetFeature(SCX_DEVICE *ctx, WDFREQUEST request, size_t report
     return STATUS_SUCCESS;
 }
 
-static NTSTATUS ScxGetFeature(SCX_DEVICE *ctx, WDFREQUEST request, BOOLEAN input)
+static NTSTATUS ScxReportId(WDFREQUEST request, uint8_t *id)
 {
     WDFMEMORY memory;
     size_t length;
-    const uint8_t *id;
-    uint8_t info[33] = {SCX_FEATURE_INFO};
-    uint8_t feature[SCX_REPORT_BYTES];
-    size_t featureLength;
+    const uint8_t *bytes;
     NTSTATUS status = WdfRequestRetrieveInputMemory(request, &memory);
     if (!NT_SUCCESS(status)) return status;
-    id = (const uint8_t *)WdfMemoryGetBuffer(memory, &length);
+    bytes = (const uint8_t *)WdfMemoryGetBuffer(memory, &length);
     if (length < 1) return STATUS_INVALID_BUFFER_SIZE;
-    if (ctx->Profile != 1 && id[0] >= 0x78 && id[0] <= 0x7f)
+    *id = bytes[0];
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS ScxGetInputReport(SCX_DEVICE *ctx, WDFREQUEST request)
+{
+    uint8_t id;
+    NTSTATUS status = ScxReportId(request, &id);
+    if (!NT_SUCCESS(status)) return status;
+    if (!ctx->Online) return STATUS_DEVICE_NOT_READY;
+    if (id != SCX_VPAD_GAMEPAD_REPORT_ID) return STATUS_NOT_SUPPORTED;
+    return ScxCopy(request, scx_vpad_hid_current(&ctx->Input), ctx->ReportLength);
+}
+
+static NTSTATUS ScxGetFeature(SCX_DEVICE *ctx, WDFREQUEST request)
+{
+    uint8_t id, feature[SCX_VPAD_MAX_REPORT_SIZE];
+    size_t length;
+    NTSTATUS status = ScxReportId(request, &id);
+    if (!NT_SUCCESS(status)) return status;
+    /* Keep SCX's transport/diagnostic reports off the Sony game-facing HID.
+     * Feedback is exclusively delivered through the owned sideband channel. */
+    if (ctx->Profile != SCX_PROFILE_GENERIC_HID && id >= 0x78 && id <= 0x7f)
         return STATUS_NOT_SUPPORTED;
-    if (!input && id[0] == 0x78 && ctx->Profile != 1) {
-        WDFMEMORY output;
-        size_t capacity;
-        ULONG waiting;
-        if (!ctx->Online) return STATUS_DEVICE_NOT_READY;
-        /* HidClass/UMDF forwards the report ID, not caller feature payload.
-         * The device owns the pending-event state; do not read a client cursor
-         * out of the input buffer. */
-        status = WdfRequestRetrieveOutputMemory(request, &output);
-        if (!NT_SUCCESS(status)) return status;
-        (void)WdfMemoryGetBuffer(output, &capacity);
-        if (capacity < sizeof(ctx->Feedback)) return STATUS_BUFFER_TOO_SMALL;
-        (void)WdfIoQueueGetState(ctx->FeedbackWaiters, &waiting, NULL);
-        if (waiting >= SCX_RING_SIZE) return STATUS_DEVICE_BUSY;
-        status = WdfRequestForwardToIoQueue(request, ctx->FeedbackWaiters);
-        if (!NT_SUCCESS(status)) return status;
-        ScxDeliverFeedback(ctx);
-        return STATUS_PENDING;
+    if (ctx->Profile == SCX_PROFILE_GENERIC_HID && id == SCX_VPAD_INFO_FEATURE_ID) {
+        uint8_t info[1 + SCX_VPAD_INFO_PACKET_SIZE] = {SCX_VPAD_INFO_FEATURE_ID};
+        status = ScxStatus(scx_vpad_get_info_for_profile(ctx->Profile, info + 1, SCX_VPAD_INFO_PACKET_SIZE));
+        return NT_SUCCESS(status) ? ScxCopy(request, info, sizeof(info)) : status;
     }
-    if (!input && id[0] == 0x79) {
-        uint8_t diagnostic[33] = {0x79};
-        memcpy(diagnostic + 1, ctx->OutputDiagnostic, sizeof(ctx->OutputDiagnostic));
-        return ScxCopy(request, diagnostic, sizeof(diagnostic));
-    }
-    if (!input && id[0] < 0x79) { ++ctx->OutputDiagnostic[6]; ctx->OutputDiagnostic[7] = id[0]; }
-    if (!input && id[0] == 0x7c) {
-        uint8_t diagnostic[17] = {0x7c,1,0,16,0};
-        memcpy(diagnostic + 5, &ctx->AuthStage, 4);
-        memcpy(diagnostic + 9, &ctx->AuthError, 4);
-        memcpy(diagnostic + 13, &ctx->AuthRequestorMode, 4);
-        return ScxCopy(request, diagnostic, sizeof(diagnostic));
-    }
-    if (input && id[0] == 1)
-        return ScxCopy(request, ctx->Current, ctx->ReportLength);
-    if (!input && id[0] == SCX_FEATURE_INFO) {
-        if (scx_vpad_get_info_for_profile(ctx->Profile, info + 1, 32) != 0)
-            return STATUS_INTERNAL_ERROR;
-        return ScxCopy(request, info, sizeof(info));
-    }
-    if (id[0] == SCX_FEEDBACK_REPORT && ctx->Profile != 1)
-        return ScxCopy(request, ctx->Feedback, sizeof(ctx->Feedback));
-    if (!input && scx_vpad_feature_report_for_profile(ctx->Profile, id[0],
-                ctx->InstanceIdentity, feature, sizeof(feature), &featureLength) == 0)
-        return ScxCopy(request, feature, featureLength);
-    return STATUS_NOT_SUPPORTED;
+    status = ScxStatus(scx_vpad_feature_report_for_profile(ctx->Profile, id,
+        ctx->InstanceIdentity, feature, sizeof(feature), &length));
+    return NT_SUCCESS(status) ? ScxCopy(request, feature, length) : status;
 }
 
 static NTSTATUS ScxOutput(SCX_DEVICE *ctx, WDFREQUEST request, size_t reportId)
@@ -402,46 +276,19 @@ static NTSTATUS ScxOutput(SCX_DEVICE *ctx, WDFREQUEST request, size_t reportId)
     WDFMEMORY memory;
     size_t length;
     const uint8_t *bytes;
-    uint8_t decoded[32];
-    uint8_t next[33];
-    uint32_t incomingFields, combinedFields, sequence;
+    uint8_t decoded[SCX_VPAD_FEEDBACK_PACKET_SIZE], changed;
     NTSTATUS status;
-    uint32_t decodedStatus;
     if (!ctx->Online) return STATUS_DEVICE_NOT_READY;
     status = WdfRequestRetrieveInputMemory(request, &memory);
     if (!NT_SUCCESS(status)) return status;
     bytes = (const uint8_t *)WdfMemoryGetBuffer(memory, &length);
-    ++ctx->OutputDiagnostic[0];
-    ctx->OutputDiagnostic[2] = (uint32_t)length;
-    ctx->OutputDiagnostic[3] = (uint32_t)reportId;
-    ctx->OutputDiagnostic[4] = (length > 1 ? bytes[1] : 0) | (length > 2 ? ((uint32_t)bytes[2] << 8) : 0) | (length > 39 ? ((uint32_t)bytes[39] << 16) : 0);
-    if (length == 0 || reportId > 255 || bytes[0] != (uint8_t)reportId)
+    if (length == 0 || reportId > UINT8_MAX || bytes[0] != (uint8_t)reportId)
         return STATUS_INVALID_PARAMETER;
-    decodedStatus = scx_vpad_parse_output_for_profile(ctx->Profile, bytes, length,
-                                          decoded, sizeof(decoded));
-    ctx->OutputDiagnostic[5] = decodedStatus;
-    if (decodedStatus != 0)
-        return STATUS_NOT_SUPPORTED;
-    ++ctx->OutputDiagnostic[1];
-    memcpy(next, ctx->Feedback, sizeof(next));
-    memcpy(&incomingFields, decoded + 8, sizeof(incomingFields));
-    memcpy(&combinedFields, next + 9, sizeof(combinedFields));
-    combinedFields |= incomingFields;
-    memcpy(next + 9, &combinedFields, sizeof(combinedFields));
-    /* Valid-field merging preserves rumble across unrelated LED updates. */
-    if (incomingFields & 1u) memcpy(next + 13, decoded + 12, 4);
-    if (incomingFields & 2u) memcpy(next + 17, decoded + 16, 3);
-    if (incomingFields & 4u) next[20] = decoded[19];
-    if (incomingFields & 8u) next[21] = decoded[20];
-    if (incomingFields & 16u) memcpy(next + 22, decoded + 21, 2);
-    if (memcmp(next, ctx->Feedback, sizeof(next)) != 0) {
-        memcpy(&sequence, next + 5, sizeof(sequence));
-        ++sequence;
-        memcpy(next + 5, &sequence, sizeof(sequence));
-        memcpy(ctx->Feedback, next, sizeof(next));
-        ScxDeliverFeedback(ctx);
-        ScxChannelPublish(ctx);
-    }
+    status = ScxStatus(scx_vpad_parse_output_for_profile(ctx->Profile, bytes, length, decoded, sizeof(decoded)));
+    if (!NT_SUCCESS(status)) return status;
+    status = ScxStatus(scx_vpad_feedback_merge(ctx->Feedback, sizeof(ctx->Feedback), decoded, sizeof(decoded), &changed));
+    if (!NT_SUCCESS(status)) return status;
+    if (changed) ScxChannelPublish(ctx);
     WdfRequestSetInformation(request, length);
     return STATUS_SUCCESS;
 }
@@ -465,7 +312,7 @@ static NTSTATUS ScxString(SCX_DEVICE *ctx, WDFREQUEST request)
     case HID_STRING_ID_IPRODUCT:
         /* Public compatibility names; PnP/service/provider remain branded SCX.
          * Games can identify Sony controllers by the HID product string. */
-        text = ctx->Profile == 3 ? L"Wireless Controller" : ctx->Profile == 4 ? L"DualSense Wireless Controller" : L"SCX Virtual Gamepad";
+        text = ctx->Profile == SCX_PROFILE_DUALSHOCK4 ? L"Wireless Controller" : ctx->Profile == SCX_PROFILE_DUALSENSE ? L"DualSense Wireless Controller" : L"SCX Virtual Gamepad";
         break;
     case HID_STRING_ID_ISERIALNUMBER:
         /* HID consumers do not necessarily inspect our PnP parent identity.
@@ -486,7 +333,9 @@ void ScxIoControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength,
     SCX_DEVICE *ctx = ScxContext(WdfIoQueueGetDevice(queue));
     NTSTATUS status;
     HID_DEVICE_ATTRIBUTES attributes;
-    UNREFERENCED_PARAMETER(inLength);
+    /* UMDF HID SET_FEATURE/SET_OUTPUT_REPORT pass the report ID through
+     * OutputBufferLength (not a buffer size). See IOCTL_UMDF_HID_SET_FEATURE. */
+    const size_t reportId = outLength;
     switch (code) {
     case IOCTL_HID_GET_DEVICE_DESCRIPTOR:
         status = ScxCopy(request, &ctx->Hid, sizeof(ctx->Hid)); break;
@@ -506,28 +355,26 @@ void ScxIoControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength,
         {
             ULONG waiting;
             (void)WdfIoQueueGetState(ctx->Reads, &waiting, NULL);
-            if (waiting >= SCX_RING_SIZE) { status = STATUS_DEVICE_BUSY; break; }
+            if (waiting >= SCX_VPAD_HID_QUEUE_CAPACITY) { status = STATUS_DEVICE_BUSY; break; }
         }
         status = WdfRequestForwardToIoQueue(request, ctx->Reads);
         if (NT_SUCCESS(status)) { ScxDrain(ctx); return; }
         break;
     case IOCTL_UMDF_HID_SET_FEATURE:
-        status = ScxSetFeature(ctx, request, outLength); break;
+        status = ScxSetFeature(ctx, request, reportId); break;
     case IOCTL_UMDF_HID_GET_FEATURE:
-        status = ScxGetFeature(ctx, request, FALSE);
-        if (status == STATUS_PENDING) return;
+        status = ScxGetFeature(ctx, request);
         break;
     case IOCTL_UMDF_HID_GET_INPUT_REPORT:
-        status = ScxGetFeature(ctx, request, TRUE); break;
+        status = ScxGetInputReport(ctx, request); break;
     case IOCTL_HID_WRITE_REPORT:
     case IOCTL_UMDF_HID_SET_OUTPUT_REPORT:
-        status = ScxOutput(ctx, request, outLength); break;
+        status = ScxOutput(ctx, request, reportId); break;
     case IOCTL_HID_GET_STRING:
         status = ScxString(ctx, request); break;
     case IOCTL_HID_ACTIVATE_DEVICE:
         ctx->Online = TRUE;
         WdfIoQueueStart(ctx->Reads);
-        WdfIoQueueStart(ctx->FeedbackWaiters);
         status = STATUS_SUCCESS; break;
     case IOCTL_HID_DEACTIVATE_DEVICE:
         ctx->Online = FALSE;
@@ -535,12 +382,10 @@ void ScxIoControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength,
         ctx->WatchdogArmed = FALSE;
         ScxNeutralize(ctx);
         WdfIoQueuePurge(ctx->Reads, NULL, NULL);
-        WdfIoQueuePurge(ctx->FeedbackWaiters, NULL, NULL);
         status = STATUS_SUCCESS; break;
     default:
         status = STATUS_NOT_SUPPORTED; break;
     }
-    ScxChannelDiagnostics(ctx);
     ScxTraceRequest(ctx, request, code, inLength, outLength, status);
     WdfRequestComplete(request, status);
 }
@@ -560,10 +405,9 @@ void ScxRemoved(WDFDEVICE device)
     ctx->Online = FALSE;
     (void)WdfTimerStop(ctx->Watchdog, FALSE);
     ctx->WatchdogArmed = FALSE;
-    ctx->Count = 0;
+    scx_vpad_hid_clear(&ctx->Input);
     WdfObjectReleaseLock(device);
     WdfIoQueuePurge(ctx->Reads, NULL, NULL);
-    WdfIoQueuePurge(ctx->FeedbackWaiters, NULL, NULL);
 }
 
 NTSTATUS ScxDeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
@@ -577,7 +421,7 @@ NTSTATUS ScxDeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     WDF_DEVICE_PROPERTY_DATA creationProperty;
     DEVPROPTYPE creationType;
     ULONG creationRequired;
-    uint32_t creationProfile = 1;
+    uint32_t creationProfile = SCX_PROFILE_GENERIC_HID;
     NTSTATUS status;
     UNREFERENCED_PARAMETER(driver);
     WDF_DEVICE_PROPERTY_DATA_INIT(&creationProperty, &ScxProfileKey);
@@ -586,7 +430,7 @@ NTSTATUS ScxDeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     if (NT_SUCCESS(status)) {
         if (creationRequired != sizeof(creationProfile) || creationType != DEVPROP_TYPE_UINT32)
             return STATUS_INVALID_PARAMETER;
-        if (creationProfile == 2) return ScxXboxDeviceAdd(driver, init);
+        if (creationProfile == SCX_PROFILE_XBOX360) return ScxXboxDeviceAdd(driver, init);
     } else if (status != STATUS_NOT_FOUND && status != STATUS_OBJECT_NAME_NOT_FOUND &&
                status != STATUS_OBJECT_PATH_NOT_FOUND) return status;
     WdfFdoInitSetFilter(init);
@@ -603,32 +447,28 @@ NTSTATUS ScxDeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     ctx = ScxContext(device);
     status = ScxReadProducerCapability(device, ctx);
     if (!NT_SUCCESS(status)) return status;
-    ctx->Profile = 1;
+    ctx->Profile = SCX_PROFILE_GENERIC_HID;
     status = ScxReadCreationProperty(device, &ScxProfileKey, &ctx->Profile,
                                     sizeof(ctx->Profile), DEVPROP_TYPE_UINT32);
     if (!NT_SUCCESS(status)) return status;
     ctx->ReportLength = scx_vpad_profile_report_size(ctx->Profile);
-    if (ctx->ReportLength == 0 || ctx->ReportLength > SCX_REPORT_BYTES)
+    if (ctx->ReportLength == 0 || ctx->ReportLength > SCX_VPAD_MAX_REPORT_SIZE)
         return STATUS_NOT_SUPPORTED;
     status = ScxReadCreationProperty(device, &ScxIdentityKey, &ctx->InstanceIdentity,
                                     sizeof(ctx->InstanceIdentity), DEVPROP_TYPE_UINT64);
     if (!NT_SUCCESS(status)) return status;
-    if (ctx->Profile != 1 && ctx->InstanceIdentity == 0)
+    if (ctx->Profile != SCX_PROFILE_GENERIC_HID && ctx->InstanceIdentity == 0)
         return STATUS_INVALID_PARAMETER;
     if (scx_vpad_get_hid_attributes(ctx->Profile, &ctx->VendorId, &ctx->ProductId,
                                      &ctx->ProductVersion) != 0)
         return STATUS_NOT_SUPPORTED;
-    ctx->Feedback[0] = SCX_FEEDBACK_REPORT;
-    ctx->DeliveredFeedbackSequence = UINT32_MAX;
-    ctx->Feedback[1] = 1;
-    ctx->Feedback[3] = 32;
-    memcpy(ctx->Feedback + 25, &ctx->Profile, sizeof(ctx->Profile));
+    status = ScxStatus(scx_vpad_feedback_init(ctx->Profile, ctx->Feedback, sizeof(ctx->Feedback)));
+    if (!NT_SUCCESS(status)) return status;
     ctx->Descriptor = scx_vpad_report_descriptor_for_profile(ctx->Profile, &ctx->DescriptorLength);
     if (ctx->Descriptor == NULL || ctx->DescriptorLength == 0 || ctx->DescriptorLength > 65535u)
         return STATUS_INVALID_PARAMETER;
-    if (scx_vpad_neutral_report_for_profile(ctx->Profile, ctx->Neutral, sizeof(ctx->Neutral)) != 0)
-        return STATUS_INTERNAL_ERROR;
-    memcpy(ctx->Current, ctx->Neutral, ctx->ReportLength);
+    status = ScxStatus(scx_vpad_hid_init(&ctx->Input, sizeof(ctx->Input), ctx->Profile));
+    if (!NT_SUCCESS(status)) return status;
     ctx->Hid.bLength = sizeof(HID_DESCRIPTOR);
     ctx->Hid.bDescriptorType = 0x21;
     ctx->Hid.bcdHID = 0x0111;
@@ -639,8 +479,6 @@ NTSTATUS ScxDeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     queue.PowerManaged = WdfFalse;
     queue.EvtIoCanceledOnQueue = ScxCanceled;
     status = WdfIoQueueCreate(device, &queue, WDF_NO_OBJECT_ATTRIBUTES, &ctx->Reads);
-    if (!NT_SUCCESS(status)) return status;
-    status = WdfIoQueueCreate(device, &queue, WDF_NO_OBJECT_ATTRIBUTES, &ctx->FeedbackWaiters);
     if (!NT_SUCCESS(status)) return status;
     WDF_TIMER_CONFIG_INIT(&timer, ScxWatchdog);
     timer.AutomaticSerialization = TRUE;
@@ -655,10 +493,7 @@ NTSTATUS ScxDeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     status = WdfIoQueueCreate(device, &queue, WDF_NO_OBJECT_ATTRIBUTES, WDF_NO_HANDLE);
     if (!NT_SUCCESS(status)) return status;
     ctx->Online = TRUE;
-    memcpy(ctx->Reports[0], ctx->Neutral, ctx->ReportLength);
-    ctx->ReportSizes[0] = ctx->ReportLength;
-    ctx->Count = 1;
-    if (ctx->Profile != 1) return ScxChannelStart(device, ctx);
+    if (ctx->Profile != SCX_PROFILE_GENERIC_HID) return ScxChannelStart(device, ctx);
     return STATUS_SUCCESS;
 }
 
@@ -667,11 +502,11 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT driverObject, PUNICODE_STRING registryPath)
     WDF_DRIVER_CONFIG config;
     NTSTATUS status;
     /* ETW registration is optional; diagnostics must never prevent operation. */
-    (void)TraceLoggingRegister(ScxTraceProvider);
+    ScxTraceInitialize();
     WDF_DRIVER_CONFIG_INIT(&config, ScxDeviceAdd);
     config.EvtDriverUnload = ScxTraceUnload;
     status = WdfDriverCreate(driverObject, registryPath, WDF_NO_OBJECT_ATTRIBUTES,
                            &config, WDF_NO_HANDLE);
-    if (!NT_SUCCESS(status)) TraceLoggingUnregister(ScxTraceProvider);
+    if (!NT_SUCCESS(status)) ScxTraceShutdown();
     return status;
 }

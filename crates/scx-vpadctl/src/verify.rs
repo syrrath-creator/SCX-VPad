@@ -138,6 +138,45 @@ pub fn benchmark(count: usize) -> Result<()> {
     Ok(())
 }
 
+/// Check the complete synthetic calibration contract independently of its
+/// encoder. Errors include the observed field, so stale test expectations are
+/// distinguishable from bad HID responses.
+fn verify_sony_calibration(profile: Profile, report: &[u8]) -> Result<()> {
+    let (id, length) = match profile {
+        Profile::DualShock4 => (2, 37),
+        Profile::DualSense => (5, 41),
+        _ => return Err("Sony calibration requested for a non-Sony profile".into()),
+    };
+    if report.len() < length || report[0] != id {
+        return Err(format!(
+            "{profile:?} calibration report header/length mismatch: id {:?}, length {}, expected id {id}, at least {length}",
+            report.first(), report.len()
+        ).into());
+    }
+    let field = |offset: usize, expected: i16| -> Result<()> {
+        let actual = i16::from_le_bytes([report[offset], report[offset + 1]]);
+        if actual != expected {
+            return Err(format!(
+                "{profile:?} calibration offset {offset}: got {actual}, expected {expected} (driver .31 reference)"
+            ).into());
+        }
+        Ok(())
+    };
+    for offset in [1, 3, 5] {
+        field(offset, 0)?;
+    }
+    for offset in [7, 11, 15] {
+        field(offset, 8000)?;
+        field(offset + 2, -8000)?;
+    }
+    field(19, 500)?;
+    field(21, 500)?;
+    for offset in [23, 27, 31] {
+        field(offset, 8192)?;
+        field(offset + 2, -8192)?;
+    }
+    Ok(())
+}
 pub fn sony() -> Result<()> {
     for profile in [Profile::DualShock4, Profile::DualSense] {
         let mut pad = VirtualPad::create_profile(profile)?;
@@ -178,17 +217,42 @@ pub fn sony() -> Result<()> {
             return Err(format!("{profile:?} consumer input mismatch").into());
         }
         println!("PASS {profile:?}: actual Windows HID consumer receives face/shoulder/system buttons, hat, sticks and triggers");
+        if profile == Profile::DualSense {
+            let previous = u32::from_le_bytes(report[12..16].try_into()?);
+            let timed = InputState {
+                timestamp_us: 123_456,
+                ..state
+            };
+            let mut fresh = reader.read_after(2000, || pad.submit(&timed))?;
+            for _ in 0..64 {
+                if u32::from_le_bytes(fresh[12..16].try_into()?) != previous {
+                    break;
+                }
+                fresh = reader.read(2000)?;
+            }
+            let sequence = u32::from_le_bytes(fresh[12..16].try_into()?);
+            if !check_input(&fresh)
+                || sequence != previous.wrapping_add(1)
+                || fresh[7] != sequence as u8
+                || u32::from_le_bytes(fresh[28..32].try_into()?) != 370_368
+                || u32::from_le_bytes(fresh[49..53].try_into()?) != 370_368
+                || fresh[54] != 0x08
+                || reader.snapshot()? != fresh
+            {
+                return Err(
+                    "DualSense USB sequence/time/status differs between stream and snapshot".into(),
+                );
+            }
+            println!("PASS DualSense: fresh 32-bit sequence, USB connection flag and both timers reach ReadFile and GetInputReport");
+        }
         let (cal, identity, firmware) = if profile == Profile::DualShock4 {
             (2, 0x12, 0xa3)
         } else {
             (5, 9, 0x20)
         };
         let calibration = reader.feature(cal)?;
-        if i16::from_le_bytes(calibration[7..9].try_into()?) != 1440
-            || i16::from_le_bytes(calibration[9..11].try_into()?) != -1440
-        {
-            return Err("synthetic calibration feature mismatch".into());
-        }
+        verify_sony_calibration(profile, &calibration)?;
+
         let fw = reader.feature(firmware)?;
         if reader.feature(identity)?[6] != 2
             || (profile == Profile::DualSense
@@ -532,4 +596,48 @@ pub fn sony_multi(wgi_probe: &str, gi_probe: &str, runtime: &str) -> Result<()> 
     }
     println!("SONY MULTI PASS: ds5/ds4/mixed; four independent HID/WGI/GameInput devices, isolated feedback and sibling removal.");
     Ok(())
+}
+
+#[cfg(test)]
+mod calibration_tests {
+    use super::*;
+
+    #[test]
+    fn native_verifier_accepts_current_driver_features_for_both_sony_profiles() {
+        for (profile, id) in [(Profile::DualShock4, 2), (Profile::DualSense, 5)] {
+            let (report, length) = scx_vpad_core::profiles::feature(profile, id, 1).unwrap();
+            verify_sony_calibration(profile, &report[..length]).unwrap();
+            verify_sony_calibration(profile, &report).unwrap();
+        }
+    }
+
+    #[test]
+    fn native_verifier_rejects_bad_fields_truncation_and_wrong_id() {
+        for (profile, id) in [(Profile::DualShock4, 2), (Profile::DualSense, 5)] {
+            let (report, length) = scx_vpad_core::profiles::feature(profile, id, 1).unwrap();
+            for offset in (1..=33).step_by(2) {
+                let mut corrupted = report;
+                corrupted[offset] ^= 1;
+                let error = verify_sony_calibration(profile, &corrupted)
+                    .unwrap_err()
+                    .to_string();
+                assert!(error.contains(&format!("offset {offset}:")), "{error}");
+            }
+            assert!(verify_sony_calibration(profile, &report[..length - 1]).is_err());
+            assert!(verify_sony_calibration(profile, &[]).is_err());
+            let mut wrong_id = report;
+            wrong_id[0] = 0xff;
+            assert!(verify_sony_calibration(profile, &wrong_id).is_err());
+        }
+    }
+
+    #[test]
+    fn native_verifier_reports_old_reference_instead_of_generic_mismatch() {
+        let (mut report, _) = scx_vpad_core::profiles::feature(Profile::DualSense, 5, 1).unwrap();
+        report[7..9].copy_from_slice(&1440i16.to_le_bytes());
+        let error = verify_sony_calibration(Profile::DualSense, &report)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("got 1440, expected 8000"), "{error}");
+    }
 }

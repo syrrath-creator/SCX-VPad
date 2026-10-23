@@ -487,6 +487,7 @@ impl Feedback {
         if update.valid & !31 != 0 {
             return Err(ValidationError::Flags);
         }
+        let before = *self;
         if update.valid & FEEDBACK_RUMBLE != 0 {
             self.left_motor = update.left_motor;
             self.right_motor = update.right_motor;
@@ -505,7 +506,10 @@ impl Feedback {
             self.blink_off = update.blink_off;
         }
         self.valid |= update.valid;
-        self.sequence = self.sequence.wrapping_add(1);
+        // Repeated identical commands must not wake feedback consumers.
+        if *self != before {
+            self.sequence = self.sequence.wrapping_add(1);
+        }
         Ok(())
     }
 }

@@ -18,6 +18,8 @@ use windows_sys::{
     },
 };
 mod bootstrap;
+#[cfg(feature = "sony-root-test")]
+mod root_test;
 
 const MAX_CONNECTIONS: u32 = 24;
 const MAX_DEVICES: usize = 16;
@@ -27,6 +29,10 @@ static STATUS: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
 static NEXT_LEASE: AtomicU64 = AtomicU64::new(1);
 
 pub fn dispatch() -> io::Result<()> {
+    #[cfg(feature = "sony-root-test")]
+    if std::env::args().skip(1).eq(["--cleanup-root-test"]) {
+        return root_test::cleanup(&install_owner()?);
+    }
     if std::env::args_os().len() != 1 {
         return Err(fail("Run via Windows Service Control Manager after installation; no elevation or console fallback is performed."));
     }
@@ -116,6 +122,8 @@ fn report(state: u32, error: u32) {
 fn run() -> io::Result<()> {
     let owner = Arc::new(install_owner()?);
     let identity_seed = install_identity_seed()?;
+    #[cfg(feature = "sony-root-test")]
+    root_test::cleanup(&owner)?;
     bootstrap::initialize()?;
     let stop = Arc::new(Handle::event()?);
     // No generic write right on the client ACE: FILE_GENERIC_WRITE includes the
@@ -695,26 +703,27 @@ struct Device {
     instance: String,
     context: Box<Created>,
     bootstrap: Option<bootstrap::Bootstrap>,
+    #[cfg(feature = "sony-root-test")]
+    root: Option<root_test::RootDevice>,
 }
 
-fn device_container(identity_seed: u64, profile: Profile, identity: u64) -> GUID {
-    // Match ROOT-enumerated Sony controllers. A private physical-style
-    // container caused incorrect game glyphs/duplicate navigation in the
-    // controlled Gears comparison. This sentinel is metadata, not ownership:
-    // PnP paths, public Sony identities, leases and capabilities stay unique.
-    // Four-pad HID/WGI/GameInput isolation is covered by self-test-sony-multi.
-    // Xbox must keep its real per-controller container for XInput assignment.
-    if matches!(profile, Profile::DualShock4 | Profile::DualSense) {
-        GUID::from_u128(0x00000000_0000_0000_ffff_ffffffffffff)
-    } else {
-        GUID::from_u128(
-            ((identity_seed as u128) << 64) | 0x5343580000000000u128 | (identity as u128 & 0xfff),
-        )
-    }
+fn device_container(identity_seed: u64, identity: u64) -> GUID {
+    // Group one virtual controller's devnodes across input APIs, separately
+    // from other controllers and the PC's system container. The installation
+    // seed plus profile/slot stays stable on reconnect; ownership, public Sony
+    // identities and authenticated leases are independent of this metadata.
+    GUID::from_u128(
+        ((identity_seed as u128) << 64) | 0x5343580000000000u128 | (identity as u128 & 0xfff),
+    )
 }
 
 impl Drop for Device {
     fn drop(&mut self) {
+        #[cfg(feature = "sony-root-test")]
+        drop(self.root.take());
+        if self.handle.is_null() {
+            return;
+        }
         unsafe {
             SwDeviceClose(self.handle);
         }
@@ -765,7 +774,7 @@ impl Device {
             _ => "SCX Virtual Gamepad",
         });
         let mut identity = device_identity(identity_seed, profile, slot);
-        let container = device_container(identity_seed, profile, identity);
+        let container = device_container(identity_seed, identity);
         let info = SW_DEVICE_CREATE_INFO {
             cbSize: size_of::<SW_DEVICE_CREATE_INFO>() as u32,
             pszInstanceId: id.as_ptr(),
@@ -779,6 +788,7 @@ impl Device {
             pszDeviceLocation: ptr::null(),
             pSecurityDescriptor: acl.0.cast(),
         };
+        let enumerator = wide(device_enumerator(profile));
         let mut profile = profile as u32;
         let mut player_index = player_index;
         let mut owner_sid = wide(owner);
@@ -828,10 +838,37 @@ impl Device {
             result: Mutex::new(None),
             complete: Handle::event()?,
         });
+        #[cfg(feature = "sony-root-test")]
+        if matches!(
+            Profile::try_from(profile),
+            Ok(Profile::DualShock4 | Profile::DualSense)
+        ) {
+            // Only the explicit ROOT diagnostic uses Windows' system
+            // container; it never changes normal SwDeviceCreate grouping.
+            let root_container = GUID::from_u128(0x00000000_0000_0000_ffff_ffffffffffff);
+            let root = root_test::RootDevice::create(
+                Profile::try_from(profile).map_err(|_| fail("invalid profile"))?,
+                identity,
+                slot,
+                owner,
+                &hardware,
+                &name,
+                &root_container,
+                &properties,
+                stop,
+            )?;
+            return Ok(Self {
+                handle: ptr::null_mut(),
+                instance: root.instance.clone(),
+                context,
+                bootstrap,
+                root: Some(root),
+            });
+        }
         let mut handle = ptr::null_mut();
         let result = unsafe {
             SwDeviceCreate(
-                wide("SCXVPAD").as_ptr(),
+                enumerator.as_ptr(),
                 wide("HTREE\\ROOT\\0").as_ptr(),
                 &info,
                 properties.len() as u32,
@@ -852,6 +889,8 @@ impl Device {
             instance: String::new(),
             context,
             bootstrap,
+            #[cfg(feature = "sony-root-test")]
+            root: None,
         };
         let events = [device.context.complete.0, stop.0];
         match unsafe { WaitForMultipleObjects(2, events.as_ptr(), 0, 10000) } {
@@ -937,32 +976,86 @@ mod tests {
         }
     }
     #[test]
-    fn sony_uses_root_container_and_other_profiles_keep_unique_containers() {
+    fn containers_are_stable_unique_and_not_system_for_all_profiles_and_slots() {
         let mut seen = std::collections::HashSet::new();
-        for seed in [0x123456789abcdef0, 0x9876543210fedcba] {
+        for seed in [
+            0,
+            1,
+            0x123456789abcdef0,
+            0x123456789abcdef1,
+            0x9876543210fedcba,
+            u64::MAX,
+        ] {
             for profile in [
                 Profile::GenericHid,
                 Profile::Xbox360,
                 Profile::DualShock4,
                 Profile::DualSense,
             ] {
-                for slot in 0..16 {
-                    let container =
-                        device_container(seed, profile, device_identity(seed, profile, slot));
+                for slot in 0..MAX_DEVICES {
+                    let container = device_container(seed, device_identity(seed, profile, slot));
                     let key = (
                         container.data1,
                         container.data2,
                         container.data3,
                         container.data4,
                     );
-                    if matches!(profile, Profile::DualShock4 | Profile::DualSense) {
-                        assert_eq!(key, (0, 0, 0, [0xff; 8]));
-                    } else {
-                        assert_ne!(key, (0, 0, 0, [0xff; 8]));
-                        assert!(seen.insert(key));
-                    }
+                    assert_eq!(
+                        key,
+                        {
+                            let again =
+                                device_container(seed, device_identity(seed, profile, slot));
+                            (again.data1, again.data2, again.data3, again.data4)
+                        },
+                        "container identity must stay stable for each installation/profile/slot"
+                    );
+                    assert_ne!(key, (0, 0, 0, [0; 8]), "null container is invalid");
+                    assert_ne!(key, (0, 0, 0, [0xff; 8]), "not the PC's container");
+                    assert!(
+                        seen.insert(key),
+                        "independent virtual devices must not merge"
+                    );
                 }
             }
+        }
+    }
+    #[test]
+    fn container_change_preserves_existing_public_identity_and_unique_scheme() {
+        let seed = 0x123456789abcdef0;
+        for (profile, first, last, container_tail) in [
+            (
+                Profile::GenericHid,
+                0x123456789abcd101,
+                0x123456789abcd110,
+                1,
+            ),
+            (Profile::Xbox360, 0x123456789abcd201, 0x123456789abcd210, 2),
+            (
+                Profile::DualShock4,
+                0x123456789abcd301,
+                0x123456789abcd310,
+                3,
+            ),
+            (
+                Profile::DualSense,
+                0x123456789abcd401,
+                0x123456789abcd410,
+                4,
+            ),
+        ] {
+            assert_eq!(device_identity(seed, profile, 0), first);
+            assert_eq!(device_identity(seed, profile, MAX_DEVICES - 1), last);
+            let container = device_container(seed, first);
+            assert_eq!(container.data1, 0x12345678);
+            assert_eq!(container.data2, 0x9abc);
+            assert_eq!(container.data3, 0xdef0);
+            assert_eq!(
+                container.data4,
+                [0x53, 0x43, 0x58, 0, 0, 0, container_tail, 1]
+            );
+            // Constructing grouping metadata does not allocate a new public
+            // identity or rotate the existing identity on reconnect.
+            assert_eq!(device_identity(seed, profile, 0), first);
         }
     }
     #[test]

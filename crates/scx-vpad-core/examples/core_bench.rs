@@ -1,6 +1,6 @@
 //! CPU-only measurement. Does not measure USB/Bluetooth, scheduling, WDF,
 //! end-to-end latency, or a comparison with other controller drivers.
-use scx_vpad_core::{profiles, queue::ReportQueue};
+use scx_vpad_core::hid_state::HidState;
 use scx_vpad_protocol::{InputState, Profile};
 use std::{hint::black_box, time::Instant};
 
@@ -15,7 +15,11 @@ fn main() {
     {
         let mut times = [0f64; SAMPLES];
         for sample in &mut times {
-            let mut queues: [ReportQueue; DEVICES] = core::array::from_fn(|_| ReportQueue::new());
+            let mut queues: [HidState; DEVICES] =
+                core::array::from_fn(|_| HidState::new(profile).unwrap());
+            for queue in &mut queues {
+                queue.consume();
+            }
             let start = Instant::now();
             for sequence in 0..ROUNDS {
                 for (index, queue) in queues.iter_mut().enumerate() {
@@ -28,16 +32,13 @@ fn main() {
                         ..InputState::NEUTRAL
                     };
                     let packet = black_box(state.encode());
-                    let decoded =
-                        InputState::decode(black_box(&packet)).expect("generated valid input");
                     queue
-                        .push(decoded)
-                        .expect("each controller has independent capacity");
-                    let popped = queue.pop().expect("accepted report remains available");
-                    black_box(
-                        profiles::encode(black_box(profile), black_box(&popped))
-                            .expect("supported profile"),
-                    );
+                        .submit(black_box(&packet))
+                        .expect("valid independent device");
+                    black_box(queue.current());
+                    if queue.front().is_some() {
+                        queue.consume();
+                    }
                 }
             }
             *sample = start.elapsed().as_nanos() as f64 / (f64::from(ROUNDS) * DEVICES as f64);

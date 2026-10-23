@@ -20,6 +20,57 @@ pub const STATUS_DEVICE: u32 = 4;
 pub const GENERIC_HID: u32 = 1;
 const MAGIC: &[u8; 4] = b"SCXV";
 
+/// Keep the Sony identity visible in HIDClass's public interface path as well
+/// as HID attributes. Other personas retain their existing enumeration policy.
+pub fn device_enumerator(profile: scx_vpad_protocol::Profile) -> &'static str {
+    use scx_vpad_protocol::Profile;
+    match profile {
+        Profile::DualShock4 => "SCXVPAD&VID_054C&PID_09CC",
+        Profile::DualSense => "SCXVPAD&VID_054C&PID_0CE6",
+        _ => "SCXVPAD",
+    }
+}
+
+/// Accept the legacy service and only the exact new namespace for the requested
+/// persona. Never accept a generic SCXVPAD prefix or a foreign device path.
+pub fn valid_device_instance(instance: &str, profile: scx_vpad_protocol::Profile) -> bool {
+    let mut parts = instance.split('\\');
+    let (Some(bus), Some(enumerator), Some(id), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    #[cfg(feature = "sony-root-test")]
+    if bus.eq_ignore_ascii_case("ROOT") {
+        return valid_root_test_instance(instance, profile);
+    }
+    bus.eq_ignore_ascii_case("SWD")
+        && (enumerator.eq_ignore_ascii_case("SCXVPAD")
+            || enumerator.eq_ignore_ascii_case(device_enumerator(profile)))
+        && !id.is_empty()
+        && !id.chars().any(char::is_control)
+}
+
+/// Development-only namespace. Normal builds never accept ROOT replies.
+#[cfg(feature = "sony-root-test")]
+pub fn valid_root_test_instance(instance: &str, profile: scx_vpad_protocol::Profile) -> bool {
+    use scx_vpad_protocol::Profile;
+    if !matches!(profile, Profile::DualSense | Profile::DualShock4) {
+        return false;
+    }
+    let prefix = format!("ROOT\\{}\\SCX-ROOT-TEST-", device_enumerator(profile));
+    let upper = instance.to_ascii_uppercase();
+    let Some(tail) = upper.strip_prefix(&prefix) else {
+        return false;
+    };
+    let bytes = tail.as_bytes();
+    bytes.len() == 19
+        && bytes[..16].iter().all(u8::is_ascii_hexdigit)
+        && bytes[16] == b'-'
+        && bytes[17] == b'0'
+        && (b'0'..=b'3').contains(&bytes[18])
+}
+
 /// A lease capability is never formatted in logs and is erased on drop.
 #[derive(Default, PartialEq, Eq)]
 pub struct Capability([u8; 32]);
@@ -236,6 +287,90 @@ mod tests {
         }
         .encode()
         .is_err());
+    }
+    #[test]
+    fn device_namespaces_are_profile_bound_and_legacy_compatible() {
+        use scx_vpad_protocol::Profile;
+        for profile in [
+            Profile::GenericHid,
+            Profile::Xbox360,
+            Profile::DualShock4,
+            Profile::DualSense,
+        ] {
+            assert!(valid_device_instance(r"SWD\SCXVPAD\PAD-42", profile));
+            let id = format!("SWD\\{}\\PAD-42", device_enumerator(profile));
+            assert!(valid_device_instance(&id, profile));
+            assert!(valid_device_instance(&id.to_lowercase(), profile));
+            for invalid in [
+                r"HID\SCXVPAD\PAD-42",
+                r"SWD\SCXVPAD_FOREIGN\42",
+                r"SWD\SCXVPAD\",
+                r"SWD\SCXVPAD\42\OTHER",
+                "SWD\\SCXVPAD\\42\0",
+            ] {
+                assert!(!valid_device_instance(invalid, profile), "{invalid:?}");
+            }
+        }
+        assert!(!valid_device_instance(
+            r"SWD\SCXVPAD&VID_054C&PID_09CC\42",
+            Profile::DualSense
+        ));
+        assert!(!valid_device_instance(
+            r"SWD\SCXVPAD&VID_054C&PID_0CE6\42",
+            Profile::DualShock4
+        ));
+        assert!(!valid_device_instance(
+            r"SWD\SCXVPAD&VID_054C&PID_0CE6\42",
+            Profile::Xbox360
+        ));
+    }
+    #[test]
+    fn root_experiment_namespace_is_explicit_and_profile_bound() {
+        use scx_vpad_protocol::Profile;
+        for profile in [Profile::DualShock4, Profile::DualSense] {
+            for slot in 0..4 {
+                let id = format!(
+                    "ROOT\\{}\\SCX-ROOT-TEST-1234567890ABCDEF-{slot:02}",
+                    device_enumerator(profile)
+                );
+                assert_eq!(
+                    valid_device_instance(&id, profile),
+                    cfg!(feature = "sony-root-test")
+                );
+                assert_eq!(
+                    valid_device_instance(&id.to_ascii_lowercase(), profile),
+                    cfg!(feature = "sony-root-test")
+                );
+                for other in [
+                    Profile::GenericHid,
+                    Profile::Xbox360,
+                    if profile == Profile::DualSense {
+                        Profile::DualShock4
+                    } else {
+                        Profile::DualSense
+                    },
+                ] {
+                    assert!(!valid_device_instance(&id, other));
+                }
+            }
+            for tail in [
+                "SCX-ROOT-TEST-1234567890ABCDEF-04",
+                "SCX-ROOT-TEST-1234567890ABCDEZ-00",
+                "SCX-ROOT-TEST-1234567890ABCDEF-00\\CHILD",
+                "SCX-ROOT-TEST-1234567890ABCDEF-00\0",
+                "PAD-42",
+                "SCX-ROOT-TEST-1234567890ABCDEF-000",
+            ] {
+                assert!(!valid_device_instance(
+                    &format!("ROOT\\{}\\{tail}", device_enumerator(profile)),
+                    profile
+                ));
+            }
+        }
+        assert!(!valid_device_instance(
+            r"ROOT\HIDCLASS\SCX-ROOT-TEST-1234567890ABCDEF-00",
+            Profile::DualSense
+        ));
     }
     #[test]
     fn capabilities_are_redacted_and_response_reserved_bytes_rejected() {

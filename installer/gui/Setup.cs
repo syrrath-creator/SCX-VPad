@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Tim Haller. See ../../LICENSE.
-// Standalone UI for the unchanged, published Preview 2 installation package.
+// Standalone UI for a hash-verified, versioned SCX VPad installation package.
 // Uses .NET Framework included with Windows 11; no runtime download is needed.
 using System;
 using System.Collections.Generic;
@@ -234,7 +234,7 @@ internal sealed class SetupForm : Form {
         if (!consent.Checked || busy) return;
         if (action != "install" && MessageBox.Show(this,
             Program.Text("Vorhandene virtuelle Verbindungen werden beendet. ", "Existing virtual connections will be stopped. ") +
-            (action == "remove" ? Program.Text("SCX VPad jetzt entfernen?", "Remove SCX VPad now?") : Program.Text("Treiber und Dienst jetzt durch Version 0.1.0.28 ersetzen? Das berechtigte Windows-Konto bleibt erhalten.", "Replace the driver and service with version 0.1.0.28 now? The authorized Windows account is retained.")),
+            (action == "remove" ? Program.Text("SCX VPad jetzt entfernen?", "Remove SCX VPad now?") : Program.Text("Treiber und Dienst jetzt durch Version " + BuildInfo.DriverVersion + " ersetzen? Das berechtigte Windows-Konto bleibt erhalten.", "Replace the driver and service with version " + BuildInfo.DriverVersion + " now? The authorized Windows account is retained.")),
             Text, MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
         if (Program.Admin) { await Execute(action); return; }
         busy = true; RefreshButtons();

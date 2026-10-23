@@ -31,7 +31,10 @@ IDs and lengths remain checked. This does not add an audio/trigger engine.
 This is a new UMDF2 HID minidriver and XUSB function driver, not a HIDMaestro fork. The Rust core owns
 the fixed byte protocol, validation, HID descriptor and report encoding. This
 small C binding owns the Windows framework handles, queued requests and device
-lifetime. It does not load a third-party driver DLL or contain a custom kernel
+lifetime. Revision .29 moves the actual 64-report FIFO, replay checking and
+feedback merge into Rust. Native ABI tests exercise those exact functions;
+there is no separate unconnected queue simulation. WDF keeps the per-device
+lock across Rust peek, output copy and consume. It does not load a third-party driver DLL or contain a custom kernel
 binary. The Windows inbox `mshidumdf` bridge and `WUDFRd` reflector are required.
 
 ## Device profiles and validation boundaries
@@ -67,8 +70,8 @@ The service supplies immutable `DEVPROPKEY` values under GUID
 property 3 a unique nonzero `UINT64` instance identity, and property 6 an opaque
 bootstrap identifier as a 32-character lowercase hexadecimal `STRING`. They are read once at
 device creation, checked for exact type/length, and never accepted over the
-data channel. Missing properties select only the backward-compatible generic
-profile; unsupported profiles fail device creation. The bootstrap identifier
+data channel. Missing optional profile/identity properties select the generic defaults;
+unsupported profiles fail device creation. The bootstrap identifier
 and its protected capability value are mandatory for all HID profiles.
 
 The XUSB profile additionally accepts immutable `UINT32` property 4, player
@@ -85,14 +88,11 @@ The service is not in the per-report data path. `HidD_GetFeature` report `0x7f`
 returns a 32-byte device-information block, never the secret capability.
 Callers allocate the collection's maximum feature buffer size (97 bytes), and
 the driver returns 33 meaningful
-bytes including the report ID. Since native revision .23, Sony feedback uses
-feature `0x78`: an overlapped, cancellable GET_FEATURE waits for pending output.
-Only the report ID reaches the UMDF input buffer; pending-event state is owned
-by the device, with one feedback stream per lease and broadcast to its currently
-queued readers. A pending change is retained until successfully delivered. The
-SDK keeps buffers alive until cancellation is drained. Feature `0x7d` still
-provides an immediate snapshot. Neither adds a second input controller. The SDK
-detects older drivers by their input-report capability and uses ReadFile there.
+bytes including the report ID. Since native revision .24, Sony profiles use
+the fixed, authenticated sideband channel for input, metadata and feedback.
+There are no SCX feature reports or extra control collections on Sony HID.
+Revision .29 deletes the unreachable .23 HID feedback handlers and unused
+queue. The SDK retains legacy fallbacks only for older driver compatibility.
 Output field masks are merged, so an
 RGB update does not erase an existing rumble state. Feedback is per device and
 has a monotonic sequence. Repeated identical outputs do not wake readers.
@@ -101,8 +101,7 @@ Each device has independent state, sequence checks, a fixed 64-report FIFO,
 manual HID read queue, and a watchdog. Windows serializes callbacks within a
 device; different devices have no shared SCX lock. Duplicate gamepad states
 refresh liveness without waking HID readers. Different states are delivered
-in order, including quick press/release transitions. A separate bounded manual
-queue services Sony feedback feature waits. A full input FIFO returns
+in order, including quick press/release transitions. Sony feedback uses its sideband event. A full input FIFO returns
 `STATUS_DEVICE_BUSY` without accepting the frame or consuming its sequence.
 The producer must retry/back off; silent transition loss is not success.
 
@@ -196,3 +195,21 @@ compatibility tables retain the upstream MIT license. Standard WDF API usage
 and inbox INF section names follow Microsoft's documented contracts. The WDK
 headers and stub library are external Microsoft build dependencies and retain
 their own terms; they are not relicensed by the SCX source license.
+
+## Revision .29 diagnostic and ABI cleanup
+
+The public generic HID descriptor no longer declares auth-stage report 0x7c.
+Reports 0x78/0x79/0x7c/0x7d are not implemented by the current HID binding.
+Xbox diagnostic IOCTL 0x00226010 now returns NOT_SUPPORTED. Legacy SDK diagnostic
+helpers are for older revisions, not reliable counters for this revision.
+Sony channel bytes 224..267 are reserved/unused; all functional offsets and the
+512-byte channel version remain unchanged. No payload/flag snapshots or auth
+stage counters are retained. ETW above remains opt-in and payload-free.
+
+scx_device.h declares the private device context. scx_channel.c and scx_trace.c
+are independent implementation units with guarded declaration headers. The
+wire protocol continues explicit byte encoding (no packed-struct reinterpretation).
+The Rust-owned in-process HidState has a separately checked C ABI layout and is
+never exposed to producers. UMDF HID set requests carry their report ID in the
+callback's output-length argument, as documented by Microsoft:
+https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/hidport/ni-hidport-ioctl_umdf_hid_set_feature

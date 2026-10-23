@@ -1,3 +1,58 @@
+## Native revision 0.1.0.32 — Sony compatibility and reliable updates
+
+- Give each virtual Sony controller a stable, separate Windows container.
+  This corrects the tested Tekken 8 case where DualSense was recognized but
+  ignored input. The same policy also received a positive Gears user test.
+  No game-specific detection or switching is involved.
+- Preserve the existing public Sony identity, authenticated input channel,
+  per-device ownership and Xbox/Generic container scheme. Unit tests cover
+  stability and separation across installation seeds, profiles and slots.
+- Keep the native Sony initialization, calibration and packet corrections
+  accumulated during the .30/.31 compatibility investigation. Diagnostic ROOT
+  creation remains explicitly opt-in and is not included in the normal build.
+- Preserve the original Windows account and all 64 bits of the device identity
+  seed when the graphical Setup replaces an existing installation. This keeps
+  device identities stable through updates.
+- Includes the .29 Rust queue/feedback cleanup described below. No new latency
+  or universal game-compatibility claim is made.
+
+Validation: isolated virtual-only Tekken menu test and a 600-second physical
+Edge forwarding run completed; the user confirms Tekken and Gears input.
+The .32 upgrade preserves the authorized account and identity seed. All eight
+installed Windows integration suites pass, including a clean repeated
+four-controller Sony test. The external GameInput identity probe now requests
+the documented gamepad kind instead of an all-bits mask; strict device-count
+expectations are unchanged. Build checks, 78 Rust tests, 32 Setup checks and 21
+replacement-identity tests pass. See VALIDATION.md for evidence and scope.
+
+## Native revision 0.1.0.29 — cleanup candidate
+
+- The real HID input queue, replay checks and valid-field feedback merging now
+  run in the allocation-free Rust core, with native C-to-Rust regression tests.
+  The former standalone Rust queue model and duplicated C ring/merge are removed.
+- Decode each authenticated HID input once. Remove permanent bring-up counters
+  and eleven atomic diagnostic stores per Sony submission. No measured latency
+  improvement is claimed; the existing shared-channel ABI remains compatible.
+- Remove unreachable Sony HID feedback handlers and their unused WDF queue.
+  Sony feedback continues through its owned sideband channel; the active Xbox
+  feedback queue remains. Sony's public HID still rejects private SCX reports.
+- Remove legacy unauthenticated HID diagnostics and Xbox diagnostic counters.
+  Opt-in payload-free Sony ETW remains available; no production input tracing.
+- Split shared-channel and ETW implementations into independent C files;
+  separate GetFeature/GetInputReport, name profiles/layout constants and use
+  consistent codec error mapping. Document UMDF's report-ID length convention.
+- Preserve watchdog neutralization without resetting replay protection. Only
+  a fresh device/lease resets sequence state. Short press/release transitions,
+  capacity/backpressure and independent device ownership remain intact.
+- Package and installer versions derive from the native DLL/payload manifest.
+
+Candidate status: build/static analysis/native ABI, 68 Rust tests and all eight
+installed Windows integration suites pass. The .28-to-.29 upgrade preserves the
+authorized account and device identity. Four independent Sony controllers pass
+HID/WGI/GameInput checks, including isolated feedback and removal. In-game and
+physical-controller forwarding have not been retested for this revision;
+preview.2 (.28) remains the published release. See VALIDATION.md for scope.
+
 # SCX VPad 0.1.0-preview.2 — native revision 0.1.0.28
 
 - Use ROOT-compatible container metadata for DS4/DualSense while retaining

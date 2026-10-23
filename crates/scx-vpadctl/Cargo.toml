@@ -10,3 +10,6 @@ scx-vpad-protocol = { path = "../scx-vpad-protocol" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_Input_XboxController"] }
+
+[dev-dependencies]
+scx-vpad-core = { path = "../scx-vpad-core" }

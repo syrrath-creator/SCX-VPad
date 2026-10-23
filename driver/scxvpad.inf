@@ -5,7 +5,7 @@ Signature="$WINDOWS NT$"
 Class=HIDClass
 ClassGuid={745a17a0-74d3-11d0-b6fe-00a0c90f57da}
 Provider=%Provider%
-DriverVer=10/14/2026,0.1.0.28
+DriverVer=10/23/2026,0.1.0.32
 CatalogFile=scxvpad.cat
 PnpLockdown=1
 

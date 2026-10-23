@@ -27,6 +27,30 @@ extern "C" {
 #define SCX_VPAD_CONTROL_USAGE_PAGE 0xff53u
 #define SCX_VPAD_CONTROL_USAGE 1u
 
+typedef enum SCX_VPAD_PROFILE {
+    SCX_PROFILE_GENERIC_HID = 1,
+    SCX_PROFILE_XBOX360 = 2,
+    SCX_PROFILE_DUALSHOCK4 = 3,
+    SCX_PROFILE_DUALSENSE = 4
+} SCX_VPAD_PROFILE;
+#define SCX_VPAD_SUBMIT_CAPABILITY_OFFSET 1u
+#define SCX_VPAD_SUBMIT_INPUT_OFFSET (1u + SCX_VPAD_AUTH_CAPABILITY_SIZE)
+#define SCX_VPAD_INPUT_SEQUENCE_OFFSET 4u
+#define SCX_VPAD_FEEDBACK_SEQUENCE_OFFSET 4u
+#define SCX_VPAD_FEEDBACK_FIELDS_OFFSET 8u
+#define SCX_VPAD_FEEDBACK_PLAYER_VALID 4u
+#define SCX_VPAD_HID_QUEUE_CAPACITY 64u
+
+/* Private in-process storage ABI (not a packed/wire struct). Rust owns ALL
+ * fields; C only allocates/aligns the storage. Initialized once per new device,
+ * never shared with untrusted producers; serialized by the device's WDF lock. */
+typedef struct SCX_VPAD_HID_STATE {
+    uint32_t private_metadata[6];
+    uint8_t private_reports[SCX_VPAD_HID_QUEUE_CAPACITY][SCX_VPAD_MAX_REPORT_SIZE];
+    uint8_t private_current[SCX_VPAD_MAX_REPORT_SIZE];
+    uint8_t private_neutral[SCX_VPAD_MAX_REPORT_SIZE];
+} SCX_VPAD_HID_STATE;
+
 /* All packets are explicitly little-endian; never cast a buffer to a struct.
  * Input64: u16 version@0, u16 size@2, u32 sequence@4, u32 buttons@8,
  * i16 leftX/Y,rightX/Y@12/14/16/18, u16 triggers@20/22, u8 hat@24,
@@ -57,7 +81,8 @@ typedef enum SCX_VPAD_STATUS {
     SCX_VPAD_INVALID_LENGTH = 2,
     SCX_VPAD_INVALID_PACKET = 3,
     SCX_VPAD_BUFFER_TOO_SMALL = 4,
-    SCX_VPAD_UNSUPPORTED = 5
+    SCX_VPAD_UNSUPPORTED = 5,
+    SCX_VPAD_QUEUE_FULL = 6
 } SCX_VPAD_STATUS;
 
 /* No ownership transfer. Caller owns readable/writable buffers and guarantees
@@ -72,6 +97,22 @@ uint32_t scx_vpad_encode_report(const uint8_t *input, size_t length,
 uint32_t scx_vpad_neutral_report(uint8_t *output, size_t capacity);
 uint32_t scx_vpad_get_info(uint8_t *output, size_t capacity);
 const uint8_t *scx_vpad_report_descriptor(size_t *output_length);
+
+/* State and packet/output buffers must not overlap. Init must succeed before
+ * other state calls. front/current pointers remain valid only until mutation;
+ * retain the device lock while copying, then consume only on successful copy. */
+uint32_t scx_vpad_hid_init(SCX_VPAD_HID_STATE *state, size_t size, uint32_t profile);
+uint32_t scx_vpad_hid_submit(SCX_VPAD_HID_STATE *state, const uint8_t *input,
+    size_t length, uint8_t *neutral);
+const uint8_t *scx_vpad_hid_front(const SCX_VPAD_HID_STATE *state);
+const uint8_t *scx_vpad_hid_current(const SCX_VPAD_HID_STATE *state);
+void scx_vpad_hid_consume(SCX_VPAD_HID_STATE *state);
+void scx_vpad_hid_neutralize(SCX_VPAD_HID_STATE *state);
+void scx_vpad_hid_clear(SCX_VPAD_HID_STATE *state);
+uint8_t scx_vpad_sequence_after(uint32_t sequence, uint32_t previous);
+uint32_t scx_vpad_feedback_init(uint32_t profile, uint8_t *output, size_t capacity);
+uint32_t scx_vpad_feedback_merge(uint8_t *current, size_t length,
+    const uint8_t *update, size_t update_length, uint8_t *changed);
 
 /* Immutable profile IDs: 1=generic HID, 2=experimental Xbox XUSB function device,
  * 3=experimental DualShock4 USB, 4=experimental DualSense USB. 5=Steam unsupported.

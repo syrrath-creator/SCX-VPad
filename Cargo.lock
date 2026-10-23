@@ -35,6 +35,7 @@ name = "scx-vpadctl"
 version = "0.1.0"
 dependencies = [
  "scx-vpad-client",
+ "scx-vpad-core",
  "scx-vpad-protocol",
  "windows-sys",
 ]

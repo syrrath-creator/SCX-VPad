@@ -6,10 +6,11 @@ use scx_vpad_protocol::{
     MAX_DEVICES,
 };
 
+pub mod hid_state;
 pub mod ownership;
 mod profile_ffi;
 pub mod profiles;
-pub mod queue;
+mod runtime_ffi;
 pub mod xusb;
 
 /// Two independently addressable top-level collections. The first is an ordinary
@@ -53,7 +54,6 @@ pub static REPORT_DESCRIPTOR: &[u8] = &[
     0x02, // capability32 + Input64 = 96 payload bytes
     0x85, 0x7f, // Device information feature report ID
     0x09, 0x03, 0x95, 0x20, 0xb1, 0x02, // 32 payload bytes
-    0x85, 0x7c, 0x09, 0x05, 0x95, 0x10, 0xb1, 0x02, // bounded auth diagnostics:16
     0xc0,
 ];
 
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(feature[0x7a], 768);
         assert_eq!(feature[0x7e], 0); // unauthenticated legacy transport removed
         assert_eq!(feature[0x7f], 256);
-        assert_eq!(feature[0x7c], 128);
+        assert_eq!(feature[0x7c], 0); // bring-up diagnostics are not a public HID API
         assert_eq!(input.iter().sum::<u32>(), 136);
     }
 }
