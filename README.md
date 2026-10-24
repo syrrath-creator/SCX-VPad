@@ -1,6 +1,10 @@
 # SCX VPad
 
-**v0.1.0 · native revision 0.1.0.35 · Windows 11 x64**
+**v0.1.1-preview.1 · native revision 0.1.0.37 · Windows 11 x64**
+
+This preview expands Source Guard to qualified native HID input collections and
+Steam Controller 2026. The stable v0.1.0 / .35 release remains available.
+See [RELEASE-NOTES.md](RELEASE-NOTES.md) for exact coverage and requirements.
 
 Virtual Xbox 360, DualShock 4, DualSense and generic HID controllers for SCX.
 The driver core, source-authorization policy, client SDK and device-management
@@ -48,8 +52,9 @@ for early/late consumer and mixed-controller coverage.
 
 ## Source Guard: prevent physical + virtual duplicate input
 
-SCX Source Guard is an original, device-specific UMDF2 upper filter. Its first
-qualified source is **DualSense Edge over Bluetooth**. During an authorized SCX
+SCX Source Guard is an original, device-specific UMDF2 upper filter. Physically
+tested sources in this preview are **DualSense Edge over Bluetooth** and
+**Steam Controller 2026 through its USB puck**. During an authorized SCX
 connection it reserves that physical gamepad's input/output for authenticated
 SCX handles, so games consume the virtual output instead of both devices.
 The matching SCX app reports when protection is active.
@@ -68,8 +73,8 @@ normal connections, disconnections and explicit reconnection do not elevate.
 
 ## Install
 
-Download **[SCX-VPad-0.1.0.35-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.0/SCX-VPad-0.1.0.35-Setup-x64.exe)**
-from [the release](https://github.com/syrrath-creator/SCX-VPad/releases/tag/v0.1.0).
+Download **[SCX-VPad-0.1.0.37-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.1-preview.1/SCX-VPad-0.1.0.37-Setup-x64.exe)**
+from [the release](https://github.com/syrrath-creator/SCX-VPad/releases/tag/v0.1.1-preview.1).
 Compare its checksum with `SHA256SUMS.txt`.
 
 1. Close SCX and games. Run Setup from the Windows account that will use SCX.
@@ -107,7 +112,7 @@ Sony Gamepad/UINavigation mappings use USB IDs 054C:09CC and 054C:0CE6. Windows
 scopes them by VID/PID/usage, so matching physical USB Sony controllers also see
 these native-layout mappings. Previous registry values are journaled and are
 restored on uninstall only if they still match SCX's installed values. This is
-separate from the Edge Bluetooth Source Guard filter.
+separate from the per-device Source Guard filter.
 
 ## Architecture and security
 
@@ -143,7 +148,7 @@ redistributed in the package.
 cargo fetch --locked
 ./scripts/fetch-wdk.ps1
 ./scripts/cargo.ps1 -CargoArgs @('test','--workspace','--locked','--offline')
-./scripts/build-package.ps1 -IncludeSourceGuard -ReleaseChannel stable -Destination ./dist/SCX-VPad-0.1.0.35-windows-x64
+./scripts/build-package.ps1 -IncludeSourceGuard -SourceModelFile ./isolation/models-qualified.txt -ReleaseChannel preview -Destination ./dist/SCX-VPad-0.1.0.37-windows-x64
 ```
 
 The stable package requires Source Guard and cannot skip tests. The build checks
@@ -156,8 +161,8 @@ drivers or services. Installed tests remain a separate release qualification.
 ZIP the package contents with `package-manifest.json` at archive root, then:
 
 ```powershell
-./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.35-windows-x64.zip -ExpectedSha256 $verifiedZipSha256 -OutputDirectory ./artifacts/setup35
-./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.35-windows-x64.zip -BuildDirectory ./artifacts/setup35
+./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.37-windows-x64.zip -ExpectedSha256 $verifiedZipSha256 -OutputDirectory ./artifacts/setup37
+./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.37-windows-x64.zip -BuildDirectory ./artifacts/setup37
 ```
 
 The Setup tests exercise the real package reader against modified archives;

@@ -1,3 +1,34 @@
+# Source Guard .37 preview validation — 24 October 2026
+
+Windows 11 x64, ordinary-user test clients after one administrative installation.
+This section is for the .37 preview; historical Stable evidence below remains
+labelled with its original revision. No end-to-end latency claim is made.
+
+- Installed DLLs verified against the candidate; authorized user and device
+  identity seed preserved. Generic input/classes, Sony input, Xbox feedback and
+  security gates for generic/wheel/flight/arcade/DS4/DS5/Xbox: PASS.
+- Two consecutive 120-second parallel runs, Steam Controller 2026 via USB puck
+  to Xbox output and DualSense Edge BT to DualSense output: PASS. Source Guard
+  active on both throughout. No reported input/feedback failures, competing
+  source claim rejected, second route continues after first disconnect, both
+  stop cleanly. The targeted run observed 31,564 Steam and 57,603 Edge reports;
+  both R2 maxima 32,767 and 237/92 sampled m:n combinations. Edge touch: 677
+  reports. User confirmed Steam trackpad mouse AIM and rolling haptics.
+- Live virtual Sony output bound to input.inf, not the Source Guard INF.
+  The unreleased .36 candidate's broad USB matches also attached to virtual
+  outputs and its prolonged parallel test failed with ERROR_BUSY. Those matches
+  were removed; the .37 tests above passed. This failed candidate was not shipped.
+- Client unit tests: 25 passed, 2 opt-in installed tests ignored. SCX input tests:
+  48 passed, 3 diagnostic/hardware tests ignored. Rust policy, package checks,
+  Clippy, native /W4 /WX /analyze, InfVerif and catalogue generation passed.
+
+Coverage is deliberately bounded: physical hardware tested here is Edge BT and
+Steam Controller 2026 puck. Generic HID support is an installed-model/SDK path,
+not a test of every controller. SDL-owned and XInput-only sources are not covered.
+Tekken/Gears were not manually replayed during this preview run; their existing
+container/layout behavior is unchanged. The late GameInput discovery limitation
+remains and still requires the documented explicit reconnect workaround.
+
 # Windows validation record
 
 ## Exact .35 installed release gate — 24 October 2026: PASS

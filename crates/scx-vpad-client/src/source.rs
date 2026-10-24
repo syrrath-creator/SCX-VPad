@@ -13,7 +13,9 @@ use std::{
 use windows_sys::{
     core::GUID,
     Win32::{
-        Devices::DeviceAndDriverInstallation::*, Foundation::*, Storage::FileSystem::*,
+        Devices::{DeviceAndDriverInstallation::*, HumanInterfaceDevice::*},
+        Foundation::*,
+        Storage::FileSystem::*,
         System::Threading::*,
     },
 };
@@ -129,12 +131,170 @@ fn open(path: &str) -> io::Result<Handle> {
         )
     })
 }
-/// Resolves only the interface registered by the installed source filter on the
-/// exact allowlisted physical gamepad instance. No arbitrary paths are opened.
-pub fn open_verified_source(instance: &str) -> io::Result<Handle> {
-    if !supported_instance(instance) {
-        return Err(fail("source model is not qualified"));
+fn physical_instance(instance: &str) -> bool {
+    let mut id = wide(instance);
+    let mut node = 0;
+    if unsafe { CM_Locate_DevNodeW(&mut node, id.as_mut_ptr(), 0) } != 0 {
+        return false;
     }
+    let mut seen = [0u32; 32];
+    let mut transport = false;
+    for depth in 0..seen.len() {
+        if seen[..depth].contains(&node) {
+            return false;
+        }
+        seen[depth] = node;
+        let mut text = [0u16; 1024];
+        if unsafe { CM_Get_Device_IDW(node, text.as_mut_ptr(), text.len() as u32, 0) } != 0 {
+            return false;
+        }
+        let Some(end) = text.iter().position(|c| *c == 0) else {
+            return false;
+        };
+        let Ok(value) = String::from_utf16(&text[..end]) else {
+            return false;
+        };
+        let value = value.to_ascii_uppercase();
+        if [
+            "SCXVPAD",
+            "VIGEM",
+            "HIDMAESTRO",
+            "USBIP",
+            "NSSVPD",
+            "VIRTUALPAD",
+            "SCX\\VIRTUAL",
+        ]
+        .iter()
+        .any(|s| value.contains(s))
+        {
+            return false;
+        }
+        transport |= value.starts_with("USB\\VID_")
+            || value.starts_with("BTHENUM\\")
+            || value.starts_with("BTHLEDEVICE\\");
+        let mut parent = 0;
+        let result = unsafe { CM_Get_Parent(&mut parent, node, 0) };
+        if result == CR_NO_SUCH_DEVNODE {
+            return transport;
+        }
+        if result != CR_SUCCESS {
+            return false;
+        }
+        node = parent;
+    }
+    false
+}
+fn qualified_collection(path: &str) -> io::Result<()> {
+    // Metadata-only handle: this works before and during an active source lease.
+    let file = Handle::new(unsafe {
+        CreateFileW(
+            wide(path).as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            ptr::null_mut(),
+        )
+    })?;
+    let mut data = 0isize;
+    if !unsafe { HidD_GetPreparsedData(file.0, &mut data) } {
+        return Err(fail("source HID descriptor unavailable"));
+    }
+    let mut caps = HIDP_CAPS::default();
+    let mut attributes = HIDD_ATTRIBUTES {
+        Size: size_of::<HIDD_ATTRIBUTES>() as u32,
+        ..Default::default()
+    };
+    let attributes_ok = unsafe { HidD_GetAttributes(file.0, &mut attributes) };
+    let status = unsafe { HidP_GetCaps(data, &mut caps) };
+    unsafe {
+        HidD_FreePreparsedData(data);
+    }
+    if status != HIDP_STATUS_SUCCESS
+        || !attributes_ok
+        || !source_collection(
+            caps.UsagePage,
+            caps.Usage,
+            attributes.VendorID,
+            attributes.ProductID,
+        )
+        || !(1..=4096).contains(&caps.InputReportByteLength)
+    {
+        return Err(fail("source is not a supported game-controller collection"));
+    }
+    Ok(())
+}
+/// Verify the live collection independently of the client-supplied instance ID.
+/// IDs alone are never evidence of a physical game controller.
+fn verify_physical_source(instance: &str) -> io::Result<()> {
+    if !supported_instance(instance) || !physical_instance(instance) {
+        return Err(fail(
+            "source is not a physical USB/Bluetooth HID controller",
+        ));
+    }
+    let (path, _) = endpoints(&HID)?
+        .into_iter()
+        .find(|(_, id)| id.eq_ignore_ascii_case(instance))
+        .ok_or_else(|| fail("physical HID collection disappeared"))?;
+    qualified_collection(&path)
+}
+/// Read-only discovery of exact hardware IDs suitable for a device-specific
+/// Source Guard package. No instance IDs, serial numbers or file paths escape.
+/// This does not stage/install filters or grant an isolation lease.
+pub fn discover_source_models() -> io::Result<Vec<String>> {
+    let mut models = std::collections::BTreeSet::new();
+    for (path, instance) in endpoints(&HID)? {
+        if !supported_instance(&instance)
+            || !physical_instance(&instance)
+            || qualified_collection(&path).is_err()
+        {
+            continue;
+        }
+        let mut id = wide(&instance);
+        let mut node = 0;
+        if unsafe { CM_Locate_DevNodeW(&mut node, id.as_mut_ptr(), 0) } != CR_SUCCESS {
+            continue;
+        }
+        let mut buffer = [0u16; 4096];
+        let mut size = size_of_val(&buffer) as u32;
+        let mut kind = 0;
+        if unsafe {
+            CM_Get_DevNode_Registry_PropertyW(
+                node,
+                CM_DRP_HARDWAREID,
+                &mut kind,
+                buffer.as_mut_ptr().cast(),
+                &mut size,
+                0,
+            )
+        } != CR_SUCCESS
+            || kind != 7
+            || size < 4
+            || size as usize > size_of_val(&buffer)
+            || !size.is_multiple_of(2)
+        {
+            continue;
+        }
+        let data = &buffer[..size as usize / 2];
+        if data[data.len() - 2..] != [0, 0] {
+            continue;
+        }
+        // The most-specific actual hardware ID retains MI/COL/REV. Never use
+        // reserved HID_DEVICE_* or a manufacturer-wide/wildcard match.
+        let end = data.iter().position(|c| *c == 0).unwrap_or(0);
+        if let Ok(model) = String::from_utf16(&data[..end]) {
+            let model = model.to_ascii_uppercase();
+            if supported_instance(&format!("{model}\\PROBE")) {
+                models.insert(model);
+            }
+        }
+    }
+    Ok(models.into_iter().collect())
+}
+/// Resolves only our filter on the exact verified physical controller collection.
+pub fn open_verified_source(instance: &str) -> io::Result<Handle> {
+    verify_physical_source(instance)?;
     let (path, _) = endpoints(&FILTER)?
         .into_iter()
         .find(|(_, id)| id.eq_ignore_ascii_case(instance))
@@ -217,6 +377,7 @@ impl SourceGuard {
         else {
             return Ok(None);
         };
+        verify_physical_source(&instance)?;
         // This path came from the exact registered filter instance above.
         // Re-enumerating the same device set adds no authentication guarantee.
         drop(verify_source_path(&filter_path)?);

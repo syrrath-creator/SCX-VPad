@@ -1,5 +1,31 @@
 # Rust SDK quick start
 
+## Source Guard in the .37 preview
+
+`SourceGuard::acquire_if_installed(hid_path)` validates the physical collection
+and acquires a short-lived lease only when the exact device filter is installed.
+Authorize every SCX-owned overlapped HID handle with
+`guard.access().authorize_handle(handle)` before starting reads, feature writes
+or feedback. Keep the guard alive until these workers have stopped. Check lease
+health during processing; do not silently continue emulation after lease loss.
+No filter returns `None`, not a claim that the source is protected. Failed
+authentication on a present filter is an error. SDL-owned and XInput-only
+handles are not covered by this SDK integration.
+
+Read-only model discovery: `cargo run --release -p scx-vpad-client --example
+source_models`. It emits model IDs, not device serials or instance paths.
+The bounded `isolation/SourceModels.ps1` generator accepts exact qualified
+hardware IDs and rejects wildcard, class-wide, revision-less USB and injected
+INF entries. Model installation needs elevation once; normal source leases do
+not. New hardware is not automatically installed at runtime.
+
+The release's selected model list is `isolation/models-qualified.txt`. To build
+the same coverage, pass `-IncludeSourceGuard -SourceModelFile
+isolation/models-qualified.txt` to `scripts/build-package.ps1`. Other generic
+HID models require their own exact model entry and installed-device validation.
+
+## Virtual outputs
+
 The SDK connects as the ordinary Windows user configured during installation.
 Install the driver and service once using the repository's installer first;
 creating or submitting to a controller does not request elevation.

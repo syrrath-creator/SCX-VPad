@@ -4,6 +4,67 @@
 pub const FRAME_SIZE: usize = 64;
 pub const MAX_TTL_MS: u64 = 3000;
 pub const CAPABILITY_SIZE: usize = 32;
+fn game_collection_id(id: &[u16]) -> bool {
+    let template = b"HID_DEVICE_UP:0000_U:0000";
+    if id.len() != template.len() {
+        return false;
+    }
+    for (i, expected) in template.iter().enumerate() {
+        if (14..18).contains(&i) || (21..25).contains(&i) {
+            continue;
+        }
+        if id[i] > 127 || (id[i] as u8).to_ascii_uppercase() != *expected {
+            return false;
+        }
+    }
+    fn hex(s: &[u16]) -> Option<u16> {
+        s.iter().try_fold(0u16, |value, c| {
+            let digit = match *c {
+                48..=57 => *c - 48,
+                65..=70 => *c - 65 + 10,
+                97..=102 => *c - 97 + 10,
+                _ => return None,
+            };
+            Some((value << 4) | digit)
+        })
+    }
+    matches!(
+        (hex(&id[14..18]), hex(&id[21..25])),
+        (Some(1), Some(4 | 5 | 8)) | (Some(2), Some(1..=12))
+    )
+}
+/// # Safety
+/// `id` references `length` readable UTF-16 code units, without terminator.
+#[no_mangle]
+pub unsafe extern "C" fn scx_source_collection(id: *const u16, length: usize) -> u32 {
+    if id.is_null() || length != b"HID_DEVICE_UP:0000_U:0000".len() {
+        return 0;
+    }
+    u32::from(game_collection_id(unsafe {
+        core::slice::from_raw_parts(id, length)
+    }))
+}
+fn steam_model(id: &[u16]) -> bool {
+    let prefix = b"HID\\VID_28DE&PID_130";
+    id.len() > prefix.len()
+        && id[..prefix.len()]
+            .iter()
+            .zip(prefix)
+            .all(|(c, b)| *c < 128 && (*c as u8).to_ascii_uppercase() == *b)
+        && (b'2' as u16..=b'5' as u16).contains(&id[prefix.len()])
+        && (id.len() == prefix.len() + 1 || id[prefix.len() + 1] == b'&' as u16)
+}
+/// # Safety
+/// `id` references `length` readable UTF-16 code units, without terminator.
+#[no_mangle]
+pub unsafe extern "C" fn scx_source_steam_model(id: *const u16, length: usize) -> u32 {
+    if id.is_null() || length > 256 {
+        return 0;
+    }
+    u32::from(steam_model(unsafe {
+        core::slice::from_raw_parts(id, length)
+    }))
+}
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Policy {
@@ -109,6 +170,44 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn collection_scope_rejects_system_and_vendor_interfaces() {
+        let check = |s: &str| game_collection_id(&s.encode_utf16().collect::<Vec<_>>());
+        for id in [
+            "HID_DEVICE_UP:0001_U:0004",
+            "hid_device_up:0001_u:0005",
+            "HID_DEVICE_UP:0001_U:0008",
+            "HID_DEVICE_UP:0002_U:000C",
+        ] {
+            assert!(check(id), "{id}");
+        }
+        for id in [
+            "HID_DEVICE_UP:0001_U:0002",
+            "HID_DEVICE_UP:0001_U:0006",
+            "HID_DEVICE_UP:000C_U:0001",
+            "HID_DEVICE_UP:FF00_U:0001",
+            "HID_DEVICE_UP:0002_U:000D",
+            "HID_DEVICE_UP:0001_U:0005extra",
+            "HID_DEVICE_UP:0001_U:0005\0",
+            "HID_DEVICE_UP:0001_U:ZZZZ",
+        ] {
+            assert!(!check(id), "{id}");
+        }
+    }
+    #[test]
+    fn vendor_exception_is_exact_steam_family_only() {
+        let check = |s: &str| steam_model(&s.encode_utf16().collect::<Vec<_>>());
+        assert!(check("HID\\VID_28DE&PID_1304&MI_02&COL03"));
+        for id in [
+            "HID\\VID_28DE&PID_1304E",
+            "HID\\VID_28DE&PID_1306",
+            "HID\\VID_1234&PID_1304",
+            "HID\\VID_28DE&PID_130",
+            "USB\\VID_28DE&PID_1304",
+        ] {
+            assert!(!check(id), "{id}");
+        }
+    }
     fn policy() -> Policy {
         Policy {
             lease: 77,

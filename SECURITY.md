@@ -73,8 +73,11 @@ disable Secure Boot, Memory Integrity, driver-signature enforcement, security
 software, or test-signing policy. Locally trusted signatures do not constitute
 Microsoft WHQL certification or an anti-cheat compatibility guarantee.
 
-Source Guard is a separate, original UMDF2 upper filter restricted to the
-qualified physical DualSense Edge Bluetooth gamepad collection. Its Rust policy
+Source Guard is a separate, original UMDF2 upper filter. The published 0.1.0
+Stable package qualifies the physical DualSense Edge Bluetooth collection.
+The 0.1.0.37 preview also qualifies physical HID gamepad,
+joystick, multi-axis and simulation collections, and the specific Valve
+2026 input collection (VID 28DE, PID 1302–1305, usage FF00/0001). Its Rust policy
 accepts bounded, authenticated per-device leases and random per-handle
 capabilities; replayed or expired authorization cannot acquire source access.
 The management service never proxies physical input reports. Client teardown
@@ -84,6 +87,24 @@ The source remains enumerable; this is input/output isolation, not device hiding
 No new kernel-mode SCX binary is installed. The Windows UMDF host/reflector is
 part of the trusted platform, and administrative code remains outside this
 isolation boundary.
+
+The development candidate validates both the live HID descriptor and physical
+USB/Bluetooth device ancestry in the service, independently of caller-supplied
+IDs. The filter independently checks the selected device's collection usage.
+Keyboard, mouse, consumer-control, virtual output and XInput compatibility
+collections are excluded. Exact per-model INF entries are required; broad HID
+class or reserved usage-ID matching is not used. SourceModels.ps1 accepts only
+bounded, exact model IDs and rejects instance paths, wildcards and INF syntax.
+Model discovery emits model IDs only, never serial numbers or instance paths.
+USB model entries must retain their revision; bare Sony VID/PID matches are
+excluded because those IDs can also bind virtual outputs. The filter rejects
+SCX virtual hardware identities as an additional qualification check. The
+unreleased .36 candidate exposed this attachment issue and was superseded by .37.
+An uninstalled or unintegrated source is not reported as protected. The normal
+app uses per-handle authorization for native HID, DualSense and Steam Controller
+input/feedback paths. SDL-owned and XInput-only handles are not covered by this
+candidate. New model installation still requires administrative setup; acquiring
+or releasing an already installed source lease does not.
 
 Release packages are explicit file allowlists with SHA-256 and byte lengths,
 bounded total size and a version/channel/platform declaration. The Setup EXE

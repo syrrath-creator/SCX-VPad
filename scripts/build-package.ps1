@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Destination, [switch]$SkipTests, [switch]$IncludeSourceGuard, [ValidateSet('preview','stable')][string]$ReleaseChannel = 'preview')
+param([string]$Destination, [switch]$SkipTests, [switch]$IncludeSourceGuard, [string]$SourceModelFile, [ValidateSet('preview','stable')][string]$ReleaseChannel = 'preview')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Destination) { $Destination = Join-Path $root 'dist/SCX-VPad-0.1.0-windows-x64' }
@@ -22,7 +22,7 @@ if (-not $SkipTests) {
 # Keep the driver's no_std build separate from the SDK's std-enabled core.
 & (Join-Path $PSScriptRoot 'cargo.ps1') -CargoArgs @('build','--release','--locked','--offline','-p','scx-vpad-core','--no-default-features','--target-dir','target/driver-core')
 & (Join-Path $PSScriptRoot 'build-driver.ps1') -RustLibrary (Join-Path $root 'target/driver-core/release/scx_vpad_core.lib')
-if ($IncludeSourceGuard) { & (Join-Path $root 'isolation/Build.ps1') }
+if ($IncludeSourceGuard) { & (Join-Path $root 'isolation/Build.ps1') -ModelFile $SourceModelFile }
 & (Join-Path $PSScriptRoot 'collect-licenses.ps1')
 $files = [ordered]@{
     'bin/scx-vpad-service.exe' = 'target/release/scx-vpad-service.exe'

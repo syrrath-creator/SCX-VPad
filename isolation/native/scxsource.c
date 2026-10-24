@@ -9,6 +9,8 @@
 typedef struct { uint64_t Lease,Deadline; uint8_t Capability[32]; } SOURCE_POLICY;
 extern uint32_t scx_source_decode(const uint8_t*,size_t,uint64_t,SOURCE_POLICY*);
 extern uint32_t scx_source_allowed(const SOURCE_POLICY*,uint64_t,const uint8_t*,uint32_t);
+extern uint32_t scx_source_collection(const uint16_t*,size_t);
+extern uint32_t scx_source_steam_model(const uint16_t*,size_t);
 _Static_assert(sizeof(SOURCE_POLICY)==48,"Rust policy ABI");
 static const GUID SourceInterface={0x8cfcc3b9,0xd6f8,0x46d2,{0x9b,0xaa,0xd6,0x4a,0x3e,0x7f,0x5c,0x51}};
 #define SOURCE_STATUS CTL_CODE(FILE_DEVICE_UNKNOWN,0x940,METHOD_BUFFERED,FILE_READ_ACCESS)
@@ -88,9 +90,33 @@ void SourceIo(WDFQUEUE queue,WDFREQUEST request) {
  WdfRequestFormatRequestUsingCurrentType(request);WdfRequestSetCompletionRoutine(request,SourceComplete,NULL);
  if(!WdfRequestSend(request,WdfDeviceGetIoTarget(device),WDF_NO_SEND_OPTIONS)){SecureZeroMemory(r->Capability,32);WdfRequestComplete(request,WdfRequestGetStatus(request));}
 }
+/* A model ID may contain multiple collections. Only game-controller TLCs may
+ * consume a lease. Keyboard/mouse/consumer/vendor interfaces remain passthrough
+ * even if a model entry accidentally selects them. No class-wide installation. */
+static BOOLEAN GameCollection(WDFDEVICE device) {
+ WDF_DEVICE_PROPERTY_DATA property;DEVPROPTYPE type=0;ULONG needed=0;WCHAR ids[4096]={0};size_t cursor=0,total;BOOLEAN qualified=FALSE,steam=FALSE,privateInput=FALSE;
+ WDF_DEVICE_PROPERTY_DATA_INIT(&property,&DEVPKEY_Device_HardwareIds);
+ if(!NT_SUCCESS(WdfDeviceQueryPropertyEx(device,&property,sizeof(ids),ids,&needed,&type)) || type!=DEVPROP_TYPE_STRING_LIST || needed<4 || needed>sizeof(ids) || needed%sizeof(WCHAR))return FALSE;
+ total=needed/sizeof(WCHAR);if(ids[total-1] || ids[total-2])return FALSE;
+ while(cursor<total && ids[cursor]) {
+  size_t end=cursor;while(end<total && ids[end])++end;
+  if(end==total)return FALSE;
+  if(_wcsnicmp(ids+cursor,L"HID\\SCXVPAD",11)==0)return FALSE;
+  /* These exact reserved IDs are read as evidence only, never INF matches. */
+  if(scx_source_steam_model((const uint16_t*)(ids+cursor),end-cursor))steam=TRUE;
+  if(_wcsnicmp(ids+cursor,L"HID_DEVICE_UP:",14)==0) {
+   if(_wcsicmp(ids+cursor,L"HID_DEVICE_UP:FF00_U:0001")==0)privateInput=TRUE;
+   else if(!scx_source_collection((const uint16_t*)(ids+cursor),end-cursor))return FALSE;
+   else qualified=TRUE;
+  }
+  cursor=end+1;
+ }
+ return privateInput ? steam : qualified;
+}
 static void PolicyPath(WDFDEVICE device,SOURCE*ctx) {
  WDF_DEVICE_PROPERTY_DATA property;DEVPROPTYPE type;ULONG needed;WCHAR id[1024]={0};uint8_t hash[32];BCRYPT_ALG_HANDLE algorithm=NULL;
  static const WCHAR prefix[]=L"SOFTWARE\\SCX\\VirtualPad\\IsolationLeases\\";static const WCHAR hex[]=L"0123456789abcdef";size_t i,len;
+ if(!GameCollection(device))return;
  WDF_DEVICE_PROPERTY_DATA_INIT(&property,&DEVPKEY_Device_InstanceId);
  if(!NT_SUCCESS(WdfDeviceQueryPropertyEx(device,&property,sizeof(id),id,&needed,&type)) || type!=DEVPROP_TYPE_STRING || needed<sizeof(WCHAR) || needed>sizeof(id) || id[needed/sizeof(WCHAR)-1]!=0)return;
  len=needed/sizeof(WCHAR)-1;for(i=0;i<len;++i)if(id[i]>=L'a'&&id[i]<=L'z')id[i]-=32;

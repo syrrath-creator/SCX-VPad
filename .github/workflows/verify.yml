@@ -39,6 +39,7 @@ jobs:
           ./scripts/test-package-validation.ps1 -RequireWindowsPowerShell51
           ./scripts/test-service-configuration.ps1
           ./scripts/test-setup-identity.ps1 -RequireWindowsPowerShell51
+          ./isolation/Test-SourceModels.ps1
   driver:
     runs-on: windows-latest
     steps:
@@ -54,7 +55,7 @@ jobs:
         run: cargo fetch --locked
       - name: Build and validate complete UMDF and Source Guard package
         shell: pwsh
-        run: ./scripts/build-package.ps1 -IncludeSourceGuard -Destination ./artifacts/package
+        run: ./scripts/build-package.ps1 -IncludeSourceGuard -SourceModelFile ./isolation/models-qualified.txt -Destination ./artifacts/package
       - name: Build and regression-test graphical Setup without installation
         shell: pwsh
         run: |

@@ -1,3 +1,31 @@
+# SCX VPad v0.1.1-preview.1 — native revision 0.1.0.37
+
+Source Guard now supports model-independent validation for native HID gamepad,
+joystick, multi-axis and simulation collections, plus the specifically qualified
+Steam Controller 2026 private input collection. This is a preview, not a claim
+that every device or acquisition backend is protected.
+
+- Physically tested: DualSense Edge over Bluetooth and Steam Controller 2026
+  through its USB puck; simultaneous source leases, independent disconnect and
+  normal-user operation. The Steam input, mode/keepalive, rumble and trackpad
+  haptic handles require the matching rebuilt SCX input implementation.
+- The driver/service independently verify source ancestry and collection usage.
+  Authorization remains per handle, not a process-wide bypass. Expired or
+  released leases cannot regain access; physical input returns after teardown.
+- Exact model INF generation rejects broad IDs, malformed entries and keyboard,
+  mouse/consumer selections. The unreleased .36 test bound Sony virtual outputs
+  too broadly; .37 removes these matches and preserves USB revision qualifiers.
+- No change to virtual output layouts, controller containers, mappings or the
+  explicit GameInput reconnect workaround. Normal connections require no UAC;
+  installing/updating the driver still does.
+
+Limitations: SDL-owned/XInput-only sources are not covered. Generic native HID
+models need exact per-device setup and validation; attaching a newly encountered
+model is not automatically authorized or installed. DS4 default SDL acquisition
+is not newly protected. This driver update alone cannot add the new handle
+integration to an older SCX binary. Keep v0.1.0 Stable if you do not need the
+preview input integration. Local signing is not WHQL or publisher certification.
+
 # SCX VPad v0.1.0 — native revision 0.1.0.35
 
 The first stable channel for the documented Windows 11 x64 feature set: Xbox

@@ -1,3 +1,4 @@
+param([string]$ModelFile)
 $ErrorActionPreference='Stop'
 $repo=Split-Path -Parent $PSScriptRoot
 $kit=& (Join-Path $repo 'scripts/check-wdk.ps1') -AsObject
@@ -21,9 +22,13 @@ if($LASTEXITCODE){throw 'Source-filter version resource failed'}
 $args=@('/nologo','/WX','/DLL','/MACHINE:X64','/SUBSYSTEM:WINDOWS,10.00','/DYNAMICBASE','/NXCOMPAT','/HIGHENTROPYVA','/guard:cf','/CETCOMPAT','/OPT:REF','/OPT:ICF','/INCREMENTAL:NO','/Brepro',('/DEF:'+(Join-Path $PSScriptRoot 'native/ScxSource.def')),('/OUT:'+(Join-Path $out 'ScxSource.dll')),$object,(Join-Path $PSScriptRoot 'policy/target/release/scx_source_policy.lib'),$kit.WdfLibrary,'kernel32.lib','ntdll.lib','advapi32.lib','bcrypt.lib')+@($libs|ForEach-Object{"/LIBPATH:$_"})
 & $kit.Link @args $resource
 if($LASTEXITCODE){throw 'Source-filter linking failed'}
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'native/scxsource.inf') -Destination $out -Force
+. (Join-Path $PSScriptRoot 'SourceModels.ps1')
+$models = @()
+if ($ModelFile) { $models = @(Get-Content -LiteralPath $ModelFile | Where-Object { $_.Trim() }) }
+$sourceInf = Add-ScxSourceModels -Template ([IO.File]::ReadAllText((Join-Path $PSScriptRoot 'native/scxsource.inf'))) -Models $models
+[IO.File]::WriteAllText((Join-Path $out 'scxsource.inf'), $sourceInf, [Text.Encoding]::ASCII)
 & $kit.InfVerif /w /v (Join-Path $out 'scxsource.inf')
 if($LASTEXITCODE){throw 'Source-filter INF validation failed'}
 & $kit.Inf2Cat "/driver:$out" /os:10_X64 /uselocaltime
 if($LASTEXITCODE){throw 'Source-filter catalog failed'}
-[ordered]@{scope='Device-specific Edge Bluetooth filter; build checks only; installed results recorded separately';files=@(Get-ChildItem $out -File|Where-Object Extension -in '.dll','.inf','.cat'|ForEach-Object{@{name=$_.Name;sha256=(Get-FileHash $_.FullName).Hash}})}|ConvertTo-Json -Depth 5|Set-Content (Join-Path $out 'build.json') -Encoding utf8
+[ordered]@{scope='Device-specific game-controller collection filter; additional exact models require installed validation; not a class filter';additionalModels=$models.Count;files=@(Get-ChildItem $out -File|Where-Object Extension -in '.dll','.inf','.cat'|ForEach-Object{@{name=$_.Name;sha256=(Get-FileHash $_.FullName).Hash}})}|ConvertTo-Json -Depth 5|Set-Content (Join-Path $out 'build.json') -Encoding utf8

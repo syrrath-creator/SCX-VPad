@@ -1,16 +1,20 @@
-; Original SCX device-specific source filter. Qualified Edge Bluetooth collection ONLY.
+; Original SCX device-specific source filter. Game-controller TLCs only.
+; Additional exact hardware IDs may be supplied at build time after discovery.
 [Version]
 Signature="$WINDOWS NT$"
 Class=HIDClass
 ClassGuid={745a17a0-74d3-11d0-b6fe-00a0c90f57da}
 Provider=%Provider%
-DriverVer=10/24/2026,0.1.0.35
+DriverVer=10/24/2026,0.1.0.37
 CatalogFile=scxsource.cat
 PnpLockdown=1
 [Manufacturer]
 %Provider%=SCX,NTamd64.10.0...22000
 [SCX.NTamd64.10.0...22000]
 %Device%=Source,HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0002054c_PID&0df2
+%Device%=Source,HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0002054c_PID&0ce6
+%Device%=Source,HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0002054c_PID&05c4
+%Device%=Source,HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0002054c_PID&09cc
 [DestinationDirs]
 DriverFiles=13
 [SourceDisksNames]
@@ -44,5 +48,5 @@ ServiceBinary=%13%\ScxSource.dll
 ScxSource.dll
 [Strings]
 Provider="SCX"
-Device="SCX Source Guard (Edge Bluetooth)"
+Device="SCX Source Guard (Game Controller)"
 Disk="SCX Source Guard"
