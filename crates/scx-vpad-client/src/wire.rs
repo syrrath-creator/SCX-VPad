@@ -40,35 +40,11 @@ pub fn valid_device_instance(instance: &str, profile: scx_vpad_protocol::Profile
     else {
         return false;
     };
-    #[cfg(feature = "sony-root-test")]
-    if bus.eq_ignore_ascii_case("ROOT") {
-        return valid_root_test_instance(instance, profile);
-    }
     bus.eq_ignore_ascii_case("SWD")
         && (enumerator.eq_ignore_ascii_case("SCXVPAD")
             || enumerator.eq_ignore_ascii_case(device_enumerator(profile)))
         && !id.is_empty()
         && !id.chars().any(char::is_control)
-}
-
-/// Development-only namespace. Normal builds never accept ROOT replies.
-#[cfg(feature = "sony-root-test")]
-pub fn valid_root_test_instance(instance: &str, profile: scx_vpad_protocol::Profile) -> bool {
-    use scx_vpad_protocol::Profile;
-    if !matches!(profile, Profile::DualSense | Profile::DualShock4) {
-        return false;
-    }
-    let prefix = format!("ROOT\\{}\\SCX-ROOT-TEST-", device_enumerator(profile));
-    let upper = instance.to_ascii_uppercase();
-    let Some(tail) = upper.strip_prefix(&prefix) else {
-        return false;
-    };
-    let bytes = tail.as_bytes();
-    bytes.len() == 19
-        && bytes[..16].iter().all(u8::is_ascii_hexdigit)
-        && bytes[16] == b'-'
-        && bytes[17] == b'0'
-        && (b'0'..=b'3').contains(&bytes[18])
 }
 
 /// A lease capability is never formatted in logs and is erased on drop.
@@ -296,6 +272,9 @@ mod tests {
             Profile::Xbox360,
             Profile::DualShock4,
             Profile::DualSense,
+            Profile::Wheel,
+            Profile::FlightStick,
+            Profile::ArcadeStick,
         ] {
             assert!(valid_device_instance(r"SWD\SCXVPAD\PAD-42", profile));
             let id = format!("SWD\\{}\\PAD-42", device_enumerator(profile));
@@ -325,7 +304,7 @@ mod tests {
         ));
     }
     #[test]
-    fn root_experiment_namespace_is_explicit_and_profile_bound() {
+    fn root_experiment_namespace_is_always_rejected() {
         use scx_vpad_protocol::Profile;
         for profile in [Profile::DualShock4, Profile::DualSense] {
             for slot in 0..4 {
@@ -333,14 +312,8 @@ mod tests {
                     "ROOT\\{}\\SCX-ROOT-TEST-1234567890ABCDEF-{slot:02}",
                     device_enumerator(profile)
                 );
-                assert_eq!(
-                    valid_device_instance(&id, profile),
-                    cfg!(feature = "sony-root-test")
-                );
-                assert_eq!(
-                    valid_device_instance(&id.to_ascii_lowercase(), profile),
-                    cfg!(feature = "sony-root-test")
-                );
+                assert!(!valid_device_instance(&id, profile));
+                assert!(!valid_device_instance(&id.to_ascii_lowercase(), profile));
                 for other in [
                     Profile::GenericHid,
                     Profile::Xbox360,

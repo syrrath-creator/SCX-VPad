@@ -54,6 +54,22 @@ pub fn transfer(
     stop: HANDLE,
     timeout: u32,
 ) -> io::Result<usize> {
+    transfer_with_cancellation(handle, buffer, write, stop, ptr::null_mut(), timeout)
+}
+
+/// Also cancels when `cancel` is signaled (for example, an authenticated client
+/// process exits). Both cancellation handles must remain open for this call.
+/// No polling or extra thread is needed; cancellation still drains kernel I/O.
+pub fn transfer_with_cancellation(
+    handle: &Handle,
+    buffer: &mut [u8],
+    write: bool,
+    stop: HANDLE,
+    cancel: HANDLE,
+    timeout: u32,
+) -> io::Result<usize> {
+    let length = u32::try_from(buffer.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "I/O buffer too large"))?;
     let event = Handle::event()?;
     let mut ov = OVERLAPPED {
         hEvent: event.0,
@@ -62,21 +78,9 @@ pub fn transfer(
     let mut n = 0;
     let ok = unsafe {
         if write {
-            WriteFile(
-                handle.0,
-                buffer.as_ptr(),
-                buffer.len() as u32,
-                &mut n,
-                &mut ov,
-            )
+            WriteFile(handle.0, buffer.as_ptr(), length, &mut n, &mut ov)
         } else {
-            ReadFile(
-                handle.0,
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                &mut n,
-                &mut ov,
-            )
+            ReadFile(handle.0, buffer.as_mut_ptr(), length, &mut n, &mut ov)
         }
     };
     if ok != 0 {
@@ -85,7 +89,7 @@ pub fn transfer(
     if unsafe { GetLastError() } != ERROR_IO_PENDING {
         return Err(io::Error::last_os_error());
     }
-    wait_io(handle, &mut ov, stop, timeout).map(|n| n as usize)
+    wait_io_with_cancellation(handle, &mut ov, stop, cancel, timeout).map(|n| n as usize)
 }
 pub fn wait_io(
     handle: &Handle,
@@ -93,9 +97,26 @@ pub fn wait_io(
     stop: HANDLE,
     timeout: u32,
 ) -> io::Result<u32> {
-    let handles = [ov.hEvent, stop];
-    let count = if stop.is_null() { 1 } else { 2 };
-    let wait = unsafe { WaitForMultipleObjects(count, handles.as_ptr(), 0, timeout) };
+    wait_io_with_cancellation(handle, ov, stop, ptr::null_mut(), timeout)
+}
+
+fn wait_io_with_cancellation(
+    handle: &Handle,
+    ov: &mut OVERLAPPED,
+    stop: HANDLE,
+    cancel: HANDLE,
+    timeout: u32,
+) -> io::Result<u32> {
+    let mut handles = [ov.hEvent, ptr::null_mut(), ptr::null_mut()];
+    let mut count = 1;
+    for candidate in [stop, cancel] {
+        if !candidate.is_null() && !handles[..count].contains(&candidate) {
+            handles[count] = candidate;
+            count += 1;
+        }
+    }
+    let wait = unsafe { WaitForMultipleObjects(count as u32, handles.as_ptr(), 0, timeout) };
+    let wait_error = (wait == WAIT_FAILED).then(io::Error::last_os_error);
     let mut n = 0;
     if wait == WAIT_OBJECT_0 {
         check(unsafe { GetOverlappedResult(handle.0, ov, &mut n, 0) })?;
@@ -106,14 +127,16 @@ pub fn wait_io(
         CancelIoEx(handle.0, ov);
         GetOverlappedResult(handle.0, ov, &mut n, 1);
     }
-    Err(io::Error::new(
-        if wait == WAIT_TIMEOUT {
-            io::ErrorKind::TimedOut
-        } else {
-            io::ErrorKind::Interrupted
-        },
-        "I/O cancelled or timed out",
-    ))
+    Err(wait_error.unwrap_or_else(|| {
+        io::Error::new(
+            if wait == WAIT_TIMEOUT {
+                io::ErrorKind::TimedOut
+            } else {
+                io::ErrorKind::Interrupted
+            },
+            "I/O cancelled or timed out",
+        )
+    }))
 }
 
 /// Bounded direct driver request using a caller-owned reusable event. The caller
@@ -243,6 +266,51 @@ mod tests {
                 .kind(),
             io::ErrorKind::Interrupted
         );
+    }
+    #[test]
+    fn process_exit_cancels_read_even_when_the_pipe_peer_remains_open() {
+        use std::{
+            os::windows::{io::AsRawHandle, process::CommandExt},
+            process::Command,
+        };
+        let (server, client) = pair();
+        let stop = Handle::event().unwrap();
+        let mut child = Command::new("cmd.exe")
+            .args(["/d", "/c", "exit", "0"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .unwrap();
+        let result = transfer_with_cancellation(
+            &server,
+            &mut [0; 32],
+            false,
+            stop.0,
+            child.as_raw_handle().cast(),
+            5000,
+        );
+        child.wait().unwrap();
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        // Pending ReadFile was cancelled and drained, not leaked or allowed to
+        // write into the released stack buffer when the retained peer writes.
+        let mut sent = [71; 32];
+        transfer(&client, &mut sent, true, ptr::null_mut(), 1000).unwrap();
+        let mut received = [0; 32];
+        transfer(&server, &mut received, false, ptr::null_mut(), 1000).unwrap();
+        assert_eq!(received, sent);
+    }
+    #[test]
+    fn second_cancellation_source_works_without_shutdown_and_deduplicates_handles() {
+        let (server, _client) = pair();
+        let cancel = Handle::event().unwrap();
+        check(unsafe { SetEvent(cancel.0) }).unwrap();
+        for stop in [ptr::null_mut(), cancel.0] {
+            assert_eq!(
+                transfer_with_cancellation(&server, &mut [0; 32], false, stop, cancel.0, 1000)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::Interrupted
+            );
+        }
     }
     #[test]
     fn oversized_message_is_rejected_not_truncated() {

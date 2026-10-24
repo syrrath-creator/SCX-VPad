@@ -80,15 +80,17 @@ function Get-OwnedDriverPackages($InstallRecord, [string]$InstallRoot, [string]$
 $infDirectory = Join-Path $windowsDirectory 'INF'
 # Resolve and validate owned packages before stopping/removing anything.
 $ownedPackages = @(Get-OwnedDriverPackages $record $actual $infDirectory)
+$service = Get-Service -Name ScxVPad -ErrorAction SilentlyContinue
+if ($service) {
+    . (Join-Path $PSScriptRoot 'Service.ps1')
+    $expectedBinary = '"' + (Join-Path $actual 'bin\scx-vpad-service.exe') + '"'
+    if ([Scx.ServiceConfiguration]::ReadImage('ScxVPad') -cne $expectedBinary) { throw 'Service binary path changed; refusing to remove a different service.' }
+}
 if ($record.PSObject.Properties.Name -contains 'GameInputJournal') {
     . (Join-Path $PSScriptRoot 'GameInput.ps1')
     Restore-ScxGameInputMappings
 }
-$service = Get-Service -Name ScxVPad -ErrorAction SilentlyContinue
 if ($service) {
-    $serviceConfig = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\ScxVPad'
-    $expectedBinary = '"' + (Join-Path $actual 'bin\scx-vpad-service.exe') + '"'
-    if ($serviceConfig.ImagePath -ne $expectedBinary) { throw 'Service binary path changed; refusing to remove a different service.' }
     Stop-Service -Name ScxVPad
     & (Join-Path $windowsDirectory 'System32\sc.exe') delete ScxVPad
     if ($LASTEXITCODE -ne 0) { throw 'Removing SCX VPad service failed.' }

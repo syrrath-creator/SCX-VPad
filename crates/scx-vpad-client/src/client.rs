@@ -390,12 +390,12 @@ impl VirtualPad {
     /// Resubmit unchanged held state at least every 250 ms: the driver's safety
     /// watchdog neutralizes a stale source after 500 ms.
     pub fn submit(&mut self, state: &InputState) -> io::Result<()> {
+        state.validate().map_err(|_| fail("invalid input state"))?;
         let mut state = *state;
         self.sequence = self.sequence.wrapping_add(1);
         state.sequence = self.sequence;
-        let bytes = state.encode();
-        InputState::decode(&bytes).map_err(|_| fail("invalid input state"))?;
         if self.profile == Profile::Xbox360 {
+            let bytes = state.encode();
             ioctl(
                 &self.device,
                 &self.io_event,
@@ -426,7 +426,7 @@ impl VirtualPad {
         if let Some(c) = &self.channel {
             return c.snapshot(self.profile);
         }
-        if self.profile == Profile::GenericHid {
+        if self.profile.is_generic_hid() {
             return Err(fail("this profile has no output feedback"));
         }
         let mut report = [0u8; HID_FEATURE_REPORT_SIZE];
@@ -838,7 +838,7 @@ fn find_endpoint_with_access(
                     && caps.FeatureReportByteLength as usize == HID_FEATURE_REPORT_SIZE
             } else {
                 caps.UsagePage == 1
-                    && caps.Usage == 5
+                    && matches!(caps.Usage, 4 | 5)
                     && matches!(caps.InputReportByteLength, 18 | 64)
             }
         {
@@ -861,7 +861,7 @@ pub struct FeedbackReader {
 }
 impl FeedbackReader {
     pub fn open(pad: &VirtualPad) -> io::Result<Self> {
-        if pad.profile == Profile::GenericHid {
+        if pad.profile.is_generic_hid() {
             return Err(fail("this profile has no output feedback"));
         }
         let channel = if pad.channel.is_some() {
@@ -1001,6 +1001,21 @@ pub struct GamepadReader<const N: usize = 18> {
     profile: Profile,
 }
 impl<const N: usize> GamepadReader<N> {
+    /// The actual Windows HID top-level collection, for explicit integration tests.
+    pub fn collection_usage(&self) -> io::Result<(u16, u16)> {
+        let mut preparsed = 0;
+        check(unsafe { HidD_GetPreparsedData(self.device.0, &mut preparsed) } as i32)?;
+        let mut caps = HIDP_CAPS::default();
+        let status = unsafe { HidP_GetCaps(preparsed, &mut caps) };
+        unsafe {
+            HidD_FreePreparsedData(preparsed);
+        }
+        if status != HIDP_STATUS_SUCCESS {
+            return Err(fail("HID collection caps unavailable"));
+        }
+        Ok((caps.UsagePage, caps.Usage))
+    }
+
     /// Interpret a captured report through Windows' descriptor-based HID parser.
     /// Diagnostic only: catches semantic descriptor errors which raw-byte tests miss.
     pub fn windows_controls(&self, report: &[u8; N]) -> io::Result<([u32; 7], Vec<u16>)> {
@@ -1008,14 +1023,52 @@ impl<const N: usize> GamepadReader<N> {
         check(unsafe { HidD_GetPreparsedData(self.device.0, &mut preparsed) } as i32)?;
         let result = (|| {
             let mut values = [0u32; 7];
-            for (index, usage) in [0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x39]
-                .into_iter()
-                .enumerate()
-            {
+            // Use the declared class's usages, not a gamepad-only assumption.
+            // Ordering remains physical report order for generic classes;
+            // Sony retains its existing X/Y/Z/Rx/Ry/Rz/hat contract.
+            let usages = match self.profile {
+                Profile::Wheel => [
+                    (2, 0xc8),
+                    (1, 0x31),
+                    (1, 0x33),
+                    (1, 0x34),
+                    (2, 0xc4),
+                    (2, 0xc5),
+                    (1, 0x39),
+                ],
+                Profile::FlightStick => [
+                    (1, 0x30),
+                    (1, 0x31),
+                    (1, 0x35),
+                    (1, 0x33),
+                    (2, 0xbb),
+                    (2, 0xc5),
+                    (1, 0x39),
+                ],
+                Profile::GenericHid | Profile::ArcadeStick => [
+                    (1, 0x30),
+                    (1, 0x31),
+                    (1, 0x33),
+                    (1, 0x34),
+                    (1, 0x32),
+                    (1, 0x35),
+                    (1, 0x39),
+                ],
+                _ => [
+                    (1, 0x30),
+                    (1, 0x31),
+                    (1, 0x32),
+                    (1, 0x33),
+                    (1, 0x34),
+                    (1, 0x35),
+                    (1, 0x39),
+                ],
+            };
+            for (index, (page, usage)) in usages.into_iter().enumerate() {
                 let status = unsafe {
                     HidP_GetUsageValue(
                         HidP_Input,
-                        1,
+                        page,
                         0,
                         usage,
                         &mut values[index],
@@ -1056,7 +1109,9 @@ impl<const N: usize> GamepadReader<N> {
 
     pub fn open(pad: &VirtualPad) -> io::Result<Self> {
         let expected = match pad.profile {
-            Profile::GenericHid => 18,
+            Profile::GenericHid | Profile::Wheel | Profile::FlightStick | Profile::ArcadeStick => {
+                18
+            }
             Profile::DualShock4 | Profile::DualSense => 64,
             _ => 0,
         };
@@ -1065,7 +1120,7 @@ impl<const N: usize> GamepadReader<N> {
         }
         let (device, path) = find_endpoint(pad.instance_id(), false, false)?
             .ok_or_else(|| fail("gamepad HID collection unavailable"))?;
-        let device = if pad.profile != Profile::GenericHid {
+        let device = if !pad.profile.is_generic_hid() {
             Handle::new(unsafe {
                 CreateFileW(
                     wide(&path).as_ptr(),

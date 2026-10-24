@@ -18,8 +18,8 @@ static int runtime_check(void)
     uint8_t packet[64] = {1,0,64,0}, expected[64], neutral = 0x5a;
     uint8_t feedback[32], update[32], before[32], changed;
     uint32_t profile, i, device, sequence;
-    for (profile = SCX_PROFILE_GENERIC_HID; profile <= SCX_PROFILE_DUALSENSE; ++profile) {
-        if (profile == SCX_PROFILE_XBOX360) continue;
+    for (profile = SCX_PROFILE_GENERIC_HID; profile <= SCX_PROFILE_ARCADE_STICK; ++profile) {
+        if (profile == SCX_PROFILE_XBOX360 || profile == 5) continue;
         memset(devices, 0xa5, sizeof(devices));
         for (device = 0; device < 4; ++device) {
             SCX_VPAD_HID_STATE *q = &devices[device].state;
@@ -149,6 +149,34 @@ int main(void)
     CHECK(featureBits[0x78] == 0 && featureBits[0x79] == 0 && featureBits[0x7c] == 0 && featureBits[0x7d] == 0);
     CHECK(featureBits[0x7a] == 96u * 8u);
     CHECK(featureBits[0x7f] == 32u * 8u);
+    {
+        uint32_t profile;
+        uint16_t vendor, product, version;
+        for (profile = SCX_PROFILE_WHEEL; profile <= SCX_PROFILE_ARCADE_STICK; ++profile) {
+            uint8_t expected[18];
+            const unsigned usage = profile == SCX_PROFILE_ARCADE_STICK ? 5u : 4u;
+            descriptor = scx_vpad_report_descriptor_for_profile(profile, &descriptorLength);
+            CHECK(descriptor != NULL && descriptorLength >= 6);
+            CHECK(descriptor[0] == 5 && descriptor[1] == 1 && descriptor[2] == 9 && descriptor[3] == usage);
+            CHECK(scx_vpad_profile_report_size(profile) == 18);
+            CHECK(scx_vpad_get_hid_attributes(profile, &vendor, &product, &version) == 0);
+            CHECK(vendor == 0 && product == 0x5340u + profile && version == 0x100);
+            CHECK(scx_vpad_get_info_for_profile(profile, info, sizeof(info)) == 0);
+            CHECK(info[8] == profile && info[18] == 18 && (info[15] & 0x80) != 0);
+            memset(output, 0x5a, sizeof(output));
+            CHECK(scx_vpad_encode_report_for_profile(profile, frame, sizeof(frame), output + 1, 18) == 0);
+            CHECK(output[0] == 0x5a && output[19] == 0x5a);
+            CHECK(scx_vpad_encode_report(frame, sizeof(frame), expected, sizeof(expected)) == 0);
+            CHECK(memcmp(output + 1, expected, sizeof(expected)) == 0);
+            memset(output, 0x5a, sizeof(output));
+            CHECK(scx_vpad_encode_report_for_profile(profile, frame, sizeof(frame), output + 1, 17) != 0);
+            for (offset = 0; offset < sizeof(output); ++offset) CHECK(output[offset] == 0x5a);
+            CHECK(scx_vpad_validate_configuration_feature(profile, 0x14, 17) == SCX_VPAD_UNSUPPORTED);
+            CHECK(scx_vpad_parse_output_for_profile(profile, frame, sizeof(frame), output, sizeof(output)) == SCX_VPAD_UNSUPPORTED);
+        }
+        CHECK(scx_vpad_profile_report_size(5) == 0);
+        CHECK(scx_vpad_report_descriptor_for_profile(5, &descriptorLength) == NULL);
+    }
     {
         uint32_t profile;
         uint8_t feedback[32], feature[64], raw[63] = {2,3};

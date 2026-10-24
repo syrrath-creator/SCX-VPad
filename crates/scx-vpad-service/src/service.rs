@@ -18,8 +18,6 @@ use windows_sys::{
     },
 };
 mod bootstrap;
-#[cfg(feature = "sony-root-test")]
-mod root_test;
 
 const MAX_CONNECTIONS: u32 = 24;
 const MAX_DEVICES: usize = 16;
@@ -29,10 +27,6 @@ static STATUS: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(ptr::null_mut());
 static NEXT_LEASE: AtomicU64 = AtomicU64::new(1);
 
 pub fn dispatch() -> io::Result<()> {
-    #[cfg(feature = "sony-root-test")]
-    if std::env::args().skip(1).eq(["--cleanup-root-test"]) {
-        return root_test::cleanup(&install_owner()?);
-    }
     if std::env::args_os().len() != 1 {
         return Err(fail("Run via Windows Service Control Manager after installation; no elevation or console fallback is performed."));
     }
@@ -122,8 +116,6 @@ fn report(state: u32, error: u32) {
 fn run() -> io::Result<()> {
     let owner = Arc::new(install_owner()?);
     let identity_seed = install_identity_seed()?;
-    #[cfg(feature = "sony-root-test")]
-    root_test::cleanup(&owner)?;
     bootstrap::initialize()?;
     let stop = Arc::new(Handle::event()?);
     // No generic write right on the client ACE: FILE_GENERIC_WRITE includes the
@@ -259,6 +251,11 @@ fn receive(pipe: &Handle, stop: &Handle, timeout: u32) -> io::Result<Request> {
     let n = transfer(pipe, &mut b, false, stop.0, timeout)?;
     Request::decode(&b[..n])
 }
+fn receive_release(pipe: &Handle, stop: &Handle, process: &Handle) -> io::Result<Request> {
+    let mut b = [0u8; REQUEST_SIZE];
+    let n = transfer_with_cancellation(pipe, &mut b, false, stop.0, process.0, INFINITE)?;
+    Request::decode(&b[..n])
+}
 fn reply(
     pipe: &Handle,
     stop: &Handle,
@@ -363,9 +360,11 @@ fn serve(
         reply(&pipe, &stop, OP_CREATE, STATUS_OK, lease, &device.instance)?;
     }
     // This thread sleeps in overlapped ReadFile. No timer/polling or per-report
-    // service work occurs. Broken pipe, cancellation, panic or valid release all
+    // service work occurs. Process exit also revokes the lease even if another
+    // process inherited/duplicated its pipe handle. Broken pipe, cancellation,
+    // panic or valid release all
     // drop the software-device handle before releasing its quota.
-    let result = receive(&pipe, &stop, INFINITE);
+    let result = receive_release(&pipe, &stop, &identity.process);
     if let Ok(request) = result {
         if request.op == OP_RELEASE && request.lease == lease {
             drop(device);
@@ -450,7 +449,7 @@ impl Drop for Reservation {
 struct Identity {
     sid: String,
     pid: u32,
-    _process: Handle,
+    process: Handle,
 }
 fn authenticate(pipe: &Handle, owner: &str) -> io::Result<Identity> {
     let mut pid = 0;
@@ -524,18 +523,20 @@ fn authenticate(pipe: &Handle, owner: &str) -> io::Result<Identity> {
     drop(_revert);
     // Retain the authenticated process object for the lease, preventing PID
     // reuse from changing the identity behind per-process quota accounting.
-    let process = Handle::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) })?;
+    let process = Handle::new(unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZATION_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    })?;
     let mut process_token = ptr::null_mut();
     check(unsafe { OpenProcessToken(process.0, TOKEN_QUERY, &mut process_token) })?;
     let process_token = Handle::new(process_token)?;
     if token_sid(&process_token)? != sid {
         return Err(fail("pipe process identity changed"));
     }
-    Ok(Identity {
-        sid,
-        pid,
-        _process: process,
-    })
+    Ok(Identity { sid, pid, process })
 }
 fn token_sid(token: &Handle) -> io::Result<String> {
     let mut storage = [0u64; 128];
@@ -703,8 +704,6 @@ struct Device {
     instance: String,
     context: Box<Created>,
     bootstrap: Option<bootstrap::Bootstrap>,
-    #[cfg(feature = "sony-root-test")]
-    root: Option<root_test::RootDevice>,
 }
 
 fn device_container(identity_seed: u64, identity: u64) -> GUID {
@@ -719,8 +718,6 @@ fn device_container(identity_seed: u64, identity: u64) -> GUID {
 
 impl Drop for Device {
     fn drop(&mut self) {
-        #[cfg(feature = "sony-root-test")]
-        drop(self.root.take());
         if self.handle.is_null() {
             return;
         }
@@ -751,6 +748,9 @@ impl Device {
             Profile::Xbox360 => "VID_045E&PID_028E&IG_00",
             Profile::DualShock4 => "VID_054C&PID_09CC",
             Profile::DualSense => "VID_054C&PID_0CE6",
+            Profile::Wheel => "VID_0000&PID_5346",
+            Profile::FlightStick => "VID_0000&PID_5347",
+            Profile::ArcadeStick => "VID_0000&PID_5348",
             _ => "GENERIC",
         };
         let id = wide(&format!(
@@ -765,12 +765,18 @@ impl Device {
             Profile::Xbox360 => "SCX\\VID_045E&PID_028E&IG_00\0SCX\\VirtualXbox\0",
             Profile::DualShock4 => "SCX\\VID_054C&PID_09CC\0SCX\\VirtualPad\0",
             Profile::DualSense => "SCX\\VID_054C&PID_0CE6\0SCX\\VirtualPad\0",
+            Profile::Wheel => "SCX\\VID_0000&PID_5346\0SCX\\VirtualPad\0",
+            Profile::FlightStick => "SCX\\VID_0000&PID_5347\0SCX\\VirtualPad\0",
+            Profile::ArcadeStick => "SCX\\VID_0000&PID_5348\0SCX\\VirtualPad\0",
             _ => "SCX\\VirtualPad\0",
         });
         let name = wide(match profile {
             Profile::Xbox360 => "SCX Xbox 360",
             Profile::DualShock4 => "SCX DualShock 4",
             Profile::DualSense => "SCX DualSense",
+            Profile::Wheel => "SCX Virtual Racing Wheel",
+            Profile::FlightStick => "SCX Virtual Flight Stick",
+            Profile::ArcadeStick => "SCX Virtual Arcade Stick",
             _ => "SCX Virtual Gamepad",
         });
         let mut identity = device_identity(identity_seed, profile, slot);
@@ -838,33 +844,6 @@ impl Device {
             result: Mutex::new(None),
             complete: Handle::event()?,
         });
-        #[cfg(feature = "sony-root-test")]
-        if matches!(
-            Profile::try_from(profile),
-            Ok(Profile::DualShock4 | Profile::DualSense)
-        ) {
-            // Only the explicit ROOT diagnostic uses Windows' system
-            // container; it never changes normal SwDeviceCreate grouping.
-            let root_container = GUID::from_u128(0x00000000_0000_0000_ffff_ffffffffffff);
-            let root = root_test::RootDevice::create(
-                Profile::try_from(profile).map_err(|_| fail("invalid profile"))?,
-                identity,
-                slot,
-                owner,
-                &hardware,
-                &name,
-                &root_container,
-                &properties,
-                stop,
-            )?;
-            return Ok(Self {
-                handle: ptr::null_mut(),
-                instance: root.instance.clone(),
-                context,
-                bootstrap,
-                root: Some(root),
-            });
-        }
         let mut handle = ptr::null_mut();
         let result = unsafe {
             SwDeviceCreate(
@@ -889,8 +868,6 @@ impl Device {
             instance: String::new(),
             context,
             bootstrap,
-            #[cfg(feature = "sony-root-test")]
-            root: None,
         };
         let events = [device.context.complete.0, stop.0];
         match unsafe { WaitForMultipleObjects(2, events.as_ptr(), 0, 10000) } {
@@ -966,6 +943,9 @@ mod tests {
             Profile::Xbox360,
             Profile::DualShock4,
             Profile::DualSense,
+            Profile::Wheel,
+            Profile::FlightStick,
+            Profile::ArcadeStick,
         ] {
             for s in 0..16 {
                 let id = device_identity(0x123456789abcdef0, p, s);
@@ -991,6 +971,9 @@ mod tests {
                 Profile::Xbox360,
                 Profile::DualShock4,
                 Profile::DualSense,
+                Profile::Wheel,
+                Profile::FlightStick,
+                Profile::ArcadeStick,
             ] {
                 for slot in 0..MAX_DEVICES {
                     let container = device_container(seed, device_identity(seed, profile, slot));
@@ -1041,6 +1024,19 @@ mod tests {
                 0x123456789abcd401,
                 0x123456789abcd410,
                 4,
+            ),
+            (Profile::Wheel, 0x123456789abcd601, 0x123456789abcd610, 6),
+            (
+                Profile::FlightStick,
+                0x123456789abcd701,
+                0x123456789abcd710,
+                7,
+            ),
+            (
+                Profile::ArcadeStick,
+                0x123456789abcd801,
+                0x123456789abcd810,
+                8,
             ),
         ] {
             assert_eq!(device_identity(seed, profile, 0), first);

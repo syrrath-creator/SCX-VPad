@@ -16,15 +16,21 @@ const DS5_USB_CONNECTED: u8 = 0x08;
 
 /// Synthesizes the 64-byte USB report; no Bluetooth CRC/transport is involved.
 pub fn encode(profile: Profile, state: &InputState) -> Option<[u8; MAX_REPORT_SIZE]> {
-    if !matches!(
-        profile,
-        Profile::GenericHid | Profile::DualShock4 | Profile::DualSense
-    ) || state.validate().is_err()
-    {
+    state.validate().ok()?;
+    encode_validated(profile, state)
+}
+
+/// Internal fast path after strict InputState::decode/validate. Wire-facing and
+/// public callers still validate before entering here, once per submission.
+pub(crate) fn encode_validated(
+    profile: Profile,
+    state: &InputState,
+) -> Option<[u8; MAX_REPORT_SIZE]> {
+    if !(profile.is_generic_hid() || matches!(profile, Profile::DualShock4 | Profile::DualSense)) {
         return None;
     }
     let mut r = [0; MAX_REPORT_SIZE];
-    if profile == Profile::GenericHid {
+    if profile.is_generic_hid() {
         r[..HID_REPORT_SIZE].copy_from_slice(&super::encode_report(state));
         return Some(r);
     }
@@ -130,6 +136,9 @@ fn contact(report: &mut [u8], state: &InputState, index: usize, height: u32) {
 
 #[path = "sony_compat.rs"]
 mod sony_compat;
+mod universal_descriptors;
+#[cfg(test)]
+mod universal_tests;
 
 /// Synthetic, internally consistent motion calibration (zero bias, 16 gyro units
 /// per degree/s, 8192 acceleration units/g). This is not captured Sony firmware.
@@ -197,6 +206,9 @@ fn signed(r: &mut [u8; 64], offset: usize, value: i16) {
 pub fn attributes(profile: Profile) -> Option<(u16, u16, u16)> {
     match profile {
         Profile::GenericHid => Some((0, 0x5343, 0x0100)),
+        Profile::Wheel => Some((0, 0x5346, 0x0100)),
+        Profile::FlightStick => Some((0, 0x5347, 0x0100)),
+        Profile::ArcadeStick => Some((0, 0x5348, 0x0100)),
         Profile::DualShock4 => Some((0x054c, 0x09cc, 0x0100)),
         Profile::DualSense => Some((0x054c, 0x0ce6, 0x0100)),
         _ => None,
@@ -282,7 +294,9 @@ pub fn parse_output(profile: Profile, report: &[u8]) -> Result<Feedback, Validat
 
 pub fn descriptor(profile: Profile) -> Option<&'static [u8]> {
     match profile {
-        Profile::GenericHid => Some(super::REPORT_DESCRIPTOR),
+        Profile::GenericHid | Profile::ArcadeStick => Some(super::REPORT_DESCRIPTOR),
+        Profile::Wheel => Some(universal_descriptors::WHEEL),
+        Profile::FlightStick => Some(universal_descriptors::FLIGHT_STICK),
         Profile::DualShock4 => Some(sony_compat::DS4_USB_DESCRIPTOR),
         Profile::DualSense => Some(sony_compat::DS5_USB_DESCRIPTOR),
         _ => None,
@@ -524,6 +538,55 @@ mod tests {
             feature(Profile::DualSense, 9, 2)
         );
         assert!(encode(Profile::Xbox360, &InputState::NEUTRAL).is_none());
+    }
+    #[test]
+    fn malformed_states_cannot_bypass_validation_at_public_or_wire_entry_points() {
+        for profile in [
+            Profile::GenericHid,
+            Profile::DualShock4,
+            Profile::DualSense,
+            Profile::Wheel,
+            Profile::FlightStick,
+            Profile::ArcadeStick,
+        ] {
+            for invalid in [
+                InputState {
+                    hat: 9,
+                    ..InputState::NEUTRAL
+                },
+                InputState {
+                    flags: 0x80,
+                    ..InputState::NEUTRAL
+                },
+                InputState {
+                    touches: [
+                        TouchPoint {
+                            flags: TOUCH_ACTIVE,
+                            ..TouchPoint::NONE
+                        },
+                        TouchPoint::NONE,
+                    ],
+                    ..InputState::NEUTRAL
+                },
+            ] {
+                assert!(encode(profile, &invalid).is_none());
+                let packet = invalid.encode();
+                let mut output = [0xa5; MAX_REPORT_SIZE];
+                assert_eq!(
+                    unsafe {
+                        crate::profile_ffi::scx_vpad_encode_report_for_profile(
+                            profile as u32,
+                            packet.as_ptr(),
+                            packet.len(),
+                            output.as_mut_ptr(),
+                            output.len(),
+                        )
+                    },
+                    crate::STATUS_INVALID_PACKET
+                );
+                assert_eq!(output, [0xa5; MAX_REPORT_SIZE]);
+            }
+        }
     }
     #[test]
     fn sony_firmware_handshake_has_valid_types_dates_and_patch_response() {

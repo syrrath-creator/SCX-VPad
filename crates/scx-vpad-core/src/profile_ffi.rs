@@ -63,7 +63,7 @@ pub unsafe extern "C" fn scx_vpad_encode_report_for_profile(
         Ok(s) => s,
         Err(_) => return STATUS_INVALID_PACKET,
     };
-    let Some(report) = profiles::encode(p, &state) else {
+    let Some(report) = profiles::encode_validated(p, &state) else {
         return STATUS_INVALID_PACKET;
     };
     // SAFETY: sufficient destination capacity and local source cannot overlap.
@@ -325,6 +325,63 @@ mod tests {
                 0
             );
             assert_eq!(len, 41);
+        }
+    }
+    #[test]
+    fn simulation_ffi_preserves_bounds_and_never_advertises_output_support() {
+        use scx_vpad_protocol::{Feedback, FEEDBACK_PACKET_SIZE};
+        for profile in [Profile::Wheel, Profile::FlightStick, Profile::ArcadeStick] {
+            let raw = profile as u32;
+            let mut report = [0xcc; 20];
+            let mut feedback = [0xaa; FEEDBACK_PACKET_SIZE + 2];
+            // SAFETY: all pointers refer to disjoint, correctly sized local arrays.
+            unsafe {
+                assert_eq!(
+                    scx_vpad_neutral_report_for_profile(raw, report.as_mut_ptr().add(1), 17),
+                    STATUS_BUFFER_TOO_SMALL
+                );
+                assert_eq!(report, [0xcc; 20]);
+                assert_eq!(
+                    scx_vpad_neutral_report_for_profile(raw, report.as_mut_ptr().add(1), 18),
+                    STATUS_OK
+                );
+                assert_eq!((report[0], report[19]), (0xcc, 0xcc));
+                assert_eq!(report[1], 1);
+                assert_eq!(report[6], 8);
+                assert_eq!(
+                    crate::runtime_ffi::scx_vpad_feedback_init(
+                        raw,
+                        feedback.as_mut_ptr().add(1),
+                        FEEDBACK_PACKET_SIZE
+                    ),
+                    STATUS_OK
+                );
+                assert_eq!(
+                    (feedback[0], feedback[FEEDBACK_PACKET_SIZE + 1]),
+                    (0xaa, 0xaa)
+                );
+                assert_eq!(
+                    Feedback::decode(&feedback[1..FEEDBACK_PACKET_SIZE + 1]),
+                    Ok(Feedback::empty(profile))
+                );
+                let before = feedback;
+                assert_eq!(
+                    scx_vpad_parse_output_for_profile(
+                        raw,
+                        report.as_ptr(),
+                        report.len(),
+                        feedback.as_mut_ptr().add(1),
+                        FEEDBACK_PACKET_SIZE
+                    ),
+                    UNSUPPORTED
+                );
+                assert_eq!(feedback, before);
+                let mut length = 0;
+                let pointer = scx_vpad_report_descriptor_for_profile(raw, &mut length);
+                let descriptor = profiles::descriptor(profile).unwrap();
+                assert_eq!(length, descriptor.len());
+                assert_eq!(core::slice::from_raw_parts(pointer, length), descriptor);
+            }
         }
     }
 }

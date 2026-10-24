@@ -33,7 +33,7 @@ using System.Reflection;
 [assembly: AssemblyProduct("SCX VPad")]
 [assembly: AssemblyCopyright("Copyright 2026 Tim Haller")]
 [assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("$driverVersion")]
 namespace ScxSetup { internal static class BuildInfo {
 internal const string DriverVersion = "$driverVersion";
 internal const string PayloadSha256 = "$($ExpectedSha256.ToLowerInvariant())";

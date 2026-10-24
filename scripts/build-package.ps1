@@ -5,7 +5,13 @@ $root = Split-Path -Parent $PSScriptRoot
 if (-not $Destination) { $Destination = Join-Path $root 'dist/SCX-VPad-0.1.0-windows-x64' }
 $Destination = [IO.Path]::GetFullPath($Destination)
 if (Test-Path -LiteralPath $Destination) { throw 'Choose a new package directory; existing packages are never overwritten.' }
-if (-not $SkipTests) { & (Join-Path $PSScriptRoot 'cargo.ps1') -CargoArgs @('test','--workspace','--locked','--offline') }
+if (-not $SkipTests) {
+    & (Join-Path $PSScriptRoot 'cargo.ps1') -CargoArgs @('test','--workspace','--locked','--offline')
+    & (Join-Path $PSScriptRoot 'test-service-configuration.ps1')
+    & (Join-Path $PSScriptRoot 'test-installer-recovery.ps1')
+    & (Join-Path $PSScriptRoot 'test-gameinput-mappings.ps1')
+    & (Join-Path $PSScriptRoot 'test-setup-identity.ps1')
+}
 & (Join-Path $PSScriptRoot 'cargo.ps1') -CargoArgs @('build','--release','--locked','--offline','-p','scx-vpad-service','-p','scx-vpadctl')
 # Keep the driver's no_std build separate from the SDK's std-enabled core.
 & (Join-Path $PSScriptRoot 'cargo.ps1') -CargoArgs @('build','--release','--locked','--offline','-p','scx-vpad-core','--no-default-features','--target-dir','target/driver-core')
@@ -22,6 +28,7 @@ $files = [ordered]@{
     'installer/Install.ps1' = 'installer/Install.ps1'
     'installer/Uninstall.ps1' = 'installer/Uninstall.ps1'
     'installer/GameInput.ps1' = 'installer/GameInput.ps1'
+    'installer/Service.ps1' = 'installer/Service.ps1'
     'LICENSE' = 'LICENSE'
     'README.md' = 'README.md'
     'SECURITY.md' = 'SECURITY.md'

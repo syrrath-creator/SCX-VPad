@@ -41,11 +41,42 @@ and reconnect deliberately instead of assuming a failed call was applied.
 
 There are at most 16 simultaneous devices, four leases per client process, and
 four Xbox-compatible devices system-wide within this service. Other implemented
-profiles are `GenericHid`, `DualShock4`, and `DualSense`. Xbox and Sony compatibility
+profiles are `GenericHid`, `DualShock4`, and `DualSense`; native revision .33 adds
+`Wheel`, `FlightStick`, and `ArcadeStick`. Xbox and Sony compatibility
 paths remain experimental; Sony profiles do not implement every physical-controller
 feature. The generic
 HID profile is not an XInput controller. See [validation](VALIDATION.md) for the
 tested compatibility limits and [security](SECURITY.md) for the lease boundary.
+
+## Generic device classes (native .33)
+
+The new classes use the same bounded `InputState` and authenticated generic HID
+transport. They expose 32 independent buttons, one eight-way hat (8 = neutral),
+four signed axes and two unsigned axes. Device class and axis usages are fixed
+by the Rust descriptor; the client cannot upload a descriptor. Each class has
+its own SCX product ID and stable per-installation/profile/slot container.
+
+| Profile | Windows HID class | `left_x`, `left_y`, `right_x`, `right_y` | `left_trigger`, `right_trigger` |
+| --- | --- | --- | --- |
+| `GenericHid` | Gamepad | X, Y, Rx, Ry | Z, Rz |
+| `Wheel` | Joystick | Steering, Y, Rx, Ry | Accelerator, brake |
+| `FlightStick` | Joystick | X, Y, Rz, Rx | Throttle, brake |
+| `ArcadeStick` | Gamepad | X, Y, Rx, Ry | Z, Rz |
+
+Use `VirtualPad::create_profile(Profile::Wheel)` (or the other class). Class-aware
+games can bind these HID/DirectInput controls; this does not guarantee automatic
+classification as `Windows.Gaming.Input.RacingWheel`, XInput support, or support
+by every game. These input-only profiles do not implement force feedback,
+rumble, a keyboard/mouse endpoint, physical-device drivers, or legacy adapters.
+Their capability flags and feedback API reject unsupported output feedback.
+Physical USB/Bluetooth/adapter detection and remapping belong in the SCX app.
+
+With games closed, the explicit `scx-vpadctl self-test-generic-classes` command
+creates four classes at once, verifies Windows HID usage parsing, button/axis
+independence and watchdog neutralization, then removes its own devices. Run
+`scx-vpadctl security-check wheel` (and `flight`/`arcade`) separately to verify
+the installed capability and token boundary. These checks require .33 installed;
+building them does not certify runtime compatibility.
 
 The service authenticates lease creation. Xbox submissions use the restricted
 native control interface; HID profiles automatically include a private per-lease
@@ -70,8 +101,9 @@ The updated SDK retains the preceding drivers' HID feedback paths when the
 old service has not provisioned a channel. Xbox is unchanged.
 
 
-Native .28 keeps Sony devices in the ROOT-compatible Windows container. Do not
-use the container GUID as a unique controller identifier: use the lease/device
-path or the distinct GameInput device ID instead. Xbox/generic devices retain
-their per-device containers. Four-controller tests verify independent identity,
+Native .32 restores a unique, stable per-installation/profile/slot Windows
+container for Sony devices as well. Xbox/generic identities retain their existing
+values; the new .33 classes use separate profile IDs. Use the lease/device path
+for live ownership, never the public container ID as an authorization token.
+Four-controller tests verify independent identity,
 input, feedback and removing one device while its three siblings remain active.

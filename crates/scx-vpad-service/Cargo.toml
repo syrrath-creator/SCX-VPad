@@ -4,9 +4,6 @@ version.workspace = true
 edition.workspace = true
 license-file = "../../LICENSE"
 
-[features]
-sony-root-test = ["scx-vpad-client/sony-root-test"]
-
 [dependencies]
 scx-vpad-client = { path = "../scx-vpad-client" }
 scx-vpad-protocol = { path = "../scx-vpad-protocol" }

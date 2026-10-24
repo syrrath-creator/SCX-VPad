@@ -158,18 +158,17 @@ try {
     $serviceExe = Join-Path $destination 'bin\scx-vpad-service.exe'
     . (Join-Path $destination 'installer\GameInput.ps1')
     Install-ScxGameInputMappings
-    & (Join-Path $windowsDirectory 'System32\sc.exe') create $serviceName binPath= ('"' + $serviceExe + '"') start= demand obj= LocalSystem DisplayName= 'SCX VPad Device Manager'
-    if ($LASTEXITCODE -ne 0) { throw "Creating service failed: $LASTEXITCODE" }
-    # Windows PowerShell 5's native argument marshalling can strip quotes passed
-    # through sc.exe. Persist the literal quoted path and check it before start.
-    $quotedServicePath = '"' + $serviceExe + '"'
-    $serviceKey = 'HKLM:\SYSTEM\CurrentControlSet\Services\ScxVPad'
-    Set-ItemProperty -LiteralPath $serviceKey -Name ImagePath -Value $quotedServicePath
-    if ((Get-ItemProperty -LiteralPath $serviceKey).ImagePath -ne $quotedServicePath) { throw 'Service executable path was not quoted correctly.' }
+    . (Join-Path $destination 'installer\Service.ps1')
+    $quotedServicePath = Get-ScxServiceCommandLine $serviceExe
+    [Scx.ServiceConfiguration]::Create($serviceName, $quotedServicePath)
     $serviceSddl = 'D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCLORPRC;;;' + $AuthorizedUserSid + ')'
     & (Join-Path $windowsDirectory 'System32\sc.exe') sdset $serviceName $serviceSddl
     if ($LASTEXITCODE -ne 0) { throw 'Failed to restrict service control permissions.' }
     Start-Service -Name $serviceName
+    (Get-Service -Name $serviceName).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
+    $runningService = Get-CimInstance Win32_Service -Filter "Name='ScxVPad'"
+    $runningProcess = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $runningService.ProcessId)
+    if ($runningService.ProcessId -eq 0 -or $runningProcess.ExecutablePath -ine $serviceExe -or $runningProcess.CommandLine -cne $quotedServicePath) { throw 'Running service executable did not match its verified SCM configuration.' }
     New-ItemProperty -Path $productKey -Name InstallComplete -Value 1 -PropertyType DWord -Force | Out-Null
     Write-Output 'SCX VPad installed. Ordinary clients can now use the service without elevation.'
 } catch {

@@ -1,3 +1,69 @@
+# SCX VPad v0.1.0-preview.4 — native revision 0.1.0.33
+
+**Development preview, not stable. Known issue:** with GameInput 4.0.302, a
+consumer started after four SCX Sony controllers already exist can discover
+only two of them. Generic and mixed profiles also show incomplete discovery.
+Initial PnP notifications are lost inside the observed GameInput startup path,
+before missing devices reach its HID parser. The issue is not fixed in this
+release. Shared-container experiments were rejected and are not included.
+Do not rely on this preview for multi-controller GameInput use.
+
+This package adds useful generic HID outputs and audited lifecycle/installer
+improvements while retaining the original individual device identities. The
+earlier installed .33 diagnostic build and the final packaged payload are
+different builds: previous hardware/software-device results are not claimed
+as a complete installed test of these exact final binaries. See VALIDATION.md.
+
+## Changes
+
+- Configure and verify the service through the Windows Service Control Manager
+  API, preserving quoted paths without PowerShell native-argument ambiguity.
+  Setup verifies the actual running process, and uninstall checks the live SCM
+  configuration before changing mappings or removing the owned service.
+
+- Add Rust-defined wheel, flight-stick and arcade-stick outputs alongside the
+  existing generic gamepad. Each has 32 buttons, one hat and six axes; wheel
+  steering/accelerator/brake and flight throttle use their HID simulation usages.
+- Keep the 64-byte input ABI, authenticated per-lease producer capability,
+  bounded input queue, watchdog, quotas and independent device cleanup. Profile
+  5 remains reserved; profiles 1–4 keep their existing reports and identities.
+- Extend Windows consumer discovery and the SDK to joystick as well as gamepad
+  collections; reject feedback for the new input-only profiles. No force-feedback
+  promise, arbitrary descriptors, keyboard/mouse device or vendor identity spoofing.
+- Add explicit native verification of all four generic classes together,
+  descriptor-based Windows axis parsing and per-class security commands.
+- Preserve the installed account and device identity seed during GUI upgrades;
+  this has also been verified during the installed .33/.32/.33 comparison.
+- Remove duplicate Rust state validation/encoding work without bypassing checks
+  at the trust boundary. Clean up bootstrap registry material if authenticated
+  channel setup fails, and end a lease when its original authenticated process
+  exits even if another process retains a duplicated pipe handle.
+- Treat a temporarily busy feedback seqlock as contention: wait on the existing
+  event within the deadline instead of disconnecting a healthy client when the
+  UMDF writer is preempted during publication.
+- Keep temporary container/topology diagnostic features out of production.
+  Keep owner and identity seed preservation, bounded authenticated transports,
+  and the .32 Sony identity policy; do not substitute shared or PC containers.
+- Retain explicit development-preview and unsigned-Setup notices, and show the
+  known multi-controller GameInput limitation before installation.
+
+## Validation and installation scope
+
+Preview preparation runs the offline Rust workspace tests, formatting and
+strict Clippy checks, the no_std/native ABI build, both InfVerif checks,
+catalog generation, isolated installer/recovery tests and embedded-Setup
+payload verification. These are not WHQL certification, an all-games guarantee,
+or proof that the final package has completed a fresh live installation test.
+Earlier .33 installed tests and the unresolved late-consumer case are recorded
+separately in VALIDATION.md.
+
+Use `SCX-VPad-0.1.0.33-Setup-x64.exe` for the graphical installer, or the matching
+`SCX-VPad-0.1.0.33-preview.4-windows-x64.zip`. The EXE embeds exactly that ZIP;
+compare the downloaded files with `SHA256SUMS.txt`. Setup is not publicly
+publisher-signed. Its installer creates a local nonexportable driver-signing
+certificate with explicit administrator approval; it does not disable Secure
+Boot or Memory Integrity. Normal controller connections do not elevate.
+
 ## Native revision 0.1.0.32 — Sony compatibility and reliable updates
 
 - Give each virtual Sony controller a stable, separate Windows container.

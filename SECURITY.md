@@ -60,6 +60,13 @@ uses atomic words under a sequence lock; consumers cannot change driver state
 through the feedback area. The worker is joined before unmapping/freeing state.
 Generic HID retains its authenticated feature transport; Xbox its private IOCTLs.
 
+Native .33's wheel, flight-stick and arcade-stick classes use that same generic
+HID transport and 256-bit lease capability. Their descriptor, product identity,
+report size, usage pages and capabilities are fixed allowlisted Rust data.
+The new classes accept no game-side output or force-feedback commands and cannot
+be reconfigured into keyboard, mouse or arbitrary HID endpoints. A physical
+device database or user mapping never supplies executable driver logic.
+
 No certificate private key belongs in the repository or release archive. The
 installer creates a machine-local, nonexportable signing key. It must never
 disable Secure Boot, Memory Integrity, driver-signature enforcement, security

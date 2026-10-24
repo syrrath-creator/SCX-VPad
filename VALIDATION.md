@@ -1,5 +1,114 @@
 # Windows validation record
 
+## Preview 4 qualification scope — 24 October 2026
+
+Native 0.1.0.33 is being packaged as **v0.1.0-preview.4**, not as a stable
+release. The original separate-container policy is retained. Temporary
+container grouping and parent/topology diagnostic services are not included.
+
+**Known failing case:** on installed Microsoft GameInput 4.0.302, immediate
+late-start consumers see two of four existing SCX Sony controllers. Four
+distinct HID/WGI inputs exist; the GameInput global reading stream confirms
+the same two-device omission, including a reader that polls without first
+registering a device callback. ETW explicitly records a dispatcher stall and
+failed PnP listener notifications before missing devices reach HID parsing.
+The exact queue occupancy was not measured. Both tested 3.x DLLs forward to
+the installed 4.0.302 core, so they do not establish behavior of an independently
+executed older runtime. The independently installed .32 baseline also fails.
+
+A shared container lets four homogeneous Sony devices appear only while
+GameInput rejects overlapping merges; mixed Sony/Xbox/wheel input then loses
+other devices. Family grouping and a separate SWD parent also fail required
+cases. These experiments are rejected, not shipped as fixes. Four ViGEmBus
+DS4 reference devices are visible to the same immediate consumer; a general
+all-driver failure is not claimed. No arbitrary initialization delay or relaxed
+device-count assertion is used to declare success.
+
+The exact final Preview 4 payload has offline build, unit, native ABI and
+isolated installer/Setup checks. It has **not** completed a fresh full live
+installation and runtime regression. Results below for earlier diagnostic .33
+builds, or .32/.29, are historical evidence, not final-payload installation
+attestation. Multi-controller GameInput compatibility remains unresolved.
+
+## Revision 0.1.0.33 candidate build — 24 October 2026
+
+The candidate adds generic wheel, flight-stick and arcade-stick classes. All
+84 workspace all-target Rust tests pass, with rustfmt and all-target clippy
+warnings denied. Independent descriptor tests verify class/axis usages, bit
+counts, ranges, 32 buttons, neutral hat, two unsigned pedals and absent output
+reports. Queue/watchdog tests exercise the actual new profiles; unsupported
+feedback and reserved Steam profile 5 remain rejected.
+
+The no_std Rust core links into the native DLL. MSVC C17 `/analyze /W4 /WX`,
+the expanded native C-to-Rust ABI checks, both INF validations and catalog
+generation pass. Existing Sony/Xbox descriptor and runtime regression tests
+are included. The seven installer ownership/recovery checks and isolated Sony
+GameInput registry restore tests pass under Windows PowerShell 5.1.
+
+The first .33 candidate was installed with the original authorized account and
+all 64 bits of its device identity seed preserved. Eleven installed suites pass:
+the four generic classes together, generic lifecycle, Sony input/features and
+feedback, Xbox input/feedback, and security for generic, wheel, flight, arcade,
+DS4, DS5 and Xbox. The generic verifier initially retried a state already held
+and waited for a duplicate report that the driver correctly coalesced; the
+verifier now submits neutral before testing that transition again. No production
+coalescing behavior was weakened. Independent application-side HidP tests also
+read the actual wheel/flight descriptors and snapshots: 32 buttons, six axes,
+one hat, 18-byte input reports, and correct decoding of locally modified report
+buffers without injecting those modifications into Windows.
+
+**Release blocker, still under investigation:** the Sony multi-device suite
+passes independent HID and Windows.Gaming.Input checks for four distinct input
+states, but a GameInput v3 consumer started afterward sees only two of four.
+A controlled actual-installation .33 -> .32 -> .33 comparison reproduces the
+same result on both revisions and restores the installed account/seed. An early
+GameInput consumer sees all four; a second consumer started while the first and
+the same devices remain alive sees only a subset. Continuous changing input,
+neutral input, longer observation, service restart, asynchronous callbacks,
+explicit dispatch, and v4 API probes do not reliably restore the immediate
+late-start case. Generic HID and Xbox devices reproduce incomplete discovery as
+well. Delaying the first callback registration allows four-device discovery,
+but an arbitrary delay is not accepted as a driver fix.
+
+An independent installed ViGEmBus reference with four DS4 devices is immediately
+enumerated as four distinct paths/IDs by the same consumer; per-path lookups and
+GameInput readings succeed. Thus this is not dismissed as a general probe or
+system failure. A bounded SCX ETW trace records successful descriptor/string
+requests on all four devices without failed native requests. Container and
+initial-discovery behavior remain under investigation. No new stable release,
+universal-game claim, or completed Sony multi-device pass is claimed here.
+
+A diagnostic service with four fully different SHA-derived RFC-format container
+GUIDs changes the effective parent/child container metadata but still reproduces
+two-device discovery. The Windows-assigned-container variant reuses cached PnP
+containers, so that variant is not treated as a valid contrast. A separate
+global GetCurrentReading/GetNextReading stream collects 3038 valid readings from
+only the same two visible devices; the omission is not merely a callback display
+problem. Both comparisons restore the original service and remove the fixtures.
+
+The installer now calls CreateServiceW/QueryServiceConfigW directly rather than
+repairing an sc.exe command line through registry writes. The new read-only SCM
+and path-rejection checks pass under Windows PowerShell 5.1, as do the seven
+ownership/recovery checks. Actual create/start/process verification will be
+covered by the next candidate installation, not claimed from read-only tests.
+
+The subsequent Rust audit removes duplicate encoding/validation work, ensures
+bootstrap cleanup on channel-creation failure, monitors the authenticated
+producer process lifetime, and tolerates transient feedback seqlock contention.
+These source changes have focused tests and Clippy coverage; their newly rebuilt
+payload still requires complete installed regression validation.
+
+The clean audit candidate removes the temporary container/ROOT experiment
+features from production source and passes all 89 workspace all-target Rust
+tests, rustfmt and Clippy with warnings denied. Its new SCM installer helper
+passes the Windows PowerShell 5.1 read-only API/path checks; seven ownership
+recovery tests, 21 account/identity replacement tests and Sony mapping recovery
+checks also pass. These are build and isolated validation results, not a claim
+that the new candidate has been installed or the GameInput blocker resolved.
+
+No physical racing wheel, force-feedback, or universal-game compatibility claim
+follows from these software-device and parser checks.
+
 ## Revision 0.1.0.32 installed validation — 23 October 2026
 
 The successful Sony container policy below is now the default service path for
@@ -38,15 +147,15 @@ Rust tests pass, with rustfmt and clippy on all targets and warnings denied.
   Windows PowerShell 5.1 and PowerShell 7. These are mocked installer checks,
   not a separate fresh-PC GUI installation claim.
 
-The initial GameInput multi failures were a diagnostic-probe issue: its device
-callback requested an all-bits input-kind mask, including undefined kinds, and
-observed only one to three of four devices. The probe now requests the documented
-`GameInputKindGamepad` it actually verifies. This alone restored complete
-enumeration with the unchanged strict four-device expectations. Neutral startup,
-reader removal, a Steam-closed comparison, a newer GameInput runtime and a
-GameInput redistributable service restart had not fixed the earlier probe.
-These controls do not establish a Steam or driver incompatibility. GameInput's
-check here concerns distinct enumerated identity, not game input processing.
+During the original .32 investigation, replacing an all-bits input-kind mask
+with the documented `GameInputKindGamepad` coincided with two complete passing
+multi-device runs. That was initially attributed to the probe mask. The 24
+October installed comparison above reproduces incomplete immediate discovery
+even with that corrected mask, so the earlier attribution is not an established
+root cause and the compatibility question is reopened. The two recorded passes
+remain evidence for those specific runs, not proof of reliable initialization.
+GameInput's original check concerned distinct enumerated identity, not game
+input processing; the newer investigation also checks actual readings.
 
 Local evidence is retained in
 `scx-rust/validation/tekken-20261023/final32-regression/`: the seven individual

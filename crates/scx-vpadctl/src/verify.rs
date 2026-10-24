@@ -112,6 +112,84 @@ pub fn self_test() -> Result<()> {
     println!("SELF-TEST PASS; created test devices will now be removed. No physical input or end-to-end game latency claim.");
     Ok(())
 }
+
+/// Exercises the four generic classes together through Windows' HID parser,
+/// including class/axis usages. This must be run explicitly after installing .33.
+pub fn generic_classes() -> Result<()> {
+    let profiles = [
+        Profile::GenericHid,
+        Profile::Wheel,
+        Profile::FlightStick,
+        Profile::ArcadeStick,
+    ];
+    let mut pads = Vec::new();
+    let mut readers = Vec::new();
+    let mut states = [InputState::NEUTRAL; 4];
+    for (index, profile) in profiles.into_iter().enumerate() {
+        let mut pad = VirtualPad::create_profile(profile)?;
+        let mut reader = GamepadReader::open(&pad)?;
+        let usage = if matches!(profile, Profile::Wheel | Profile::FlightStick) {
+            4
+        } else {
+            5
+        };
+        if reader.collection_usage()? != (1, usage) {
+            return Err(format!("{profile:?}: wrong Windows HID collection class").into());
+        }
+        if FeedbackReader::open(&pad).is_ok() || pad.feedback_snapshot().is_ok() {
+            return Err(format!("{profile:?}: input-only class advertised output feedback").into());
+        }
+        let state = &mut states[index];
+        state.buttons = (1u32 << index) | 0x80000000;
+        state.hat = index as u8;
+        state.left_x = -12345;
+        state.left_y = 23456;
+        state.right_x = i16::MIN;
+        state.right_y = i16::MAX;
+        state.left_trigger = 1234;
+        state.right_trigger = u16::MAX;
+        send_read(&mut pad, &mut reader, state)?;
+        let report = reader.snapshot()?;
+        verify_report(&report, state)?;
+        let (axes, buttons) = reader.windows_controls(&report)?;
+        let expected = [
+            state.left_x as u16 as u32,
+            state.left_y as u16 as u32,
+            state.right_x as u16 as u32,
+            state.right_y as u16 as u32,
+            state.left_trigger as u32,
+            state.right_trigger as u32,
+            state.hat as u32,
+        ];
+        if axes != expected || buttons != vec![index as u16 + 1, 32] {
+            return Err(format!(
+                "{profile:?}: Windows semantic axes/buttons mismatch: {axes:?}/{buttons:?}"
+            )
+            .into());
+        }
+        println!("PASS {profile:?}: correct HID class, 32 buttons, hat and all six semantic axes; no invented force feedback");
+        pads.push(pad);
+        readers.push(reader);
+    }
+    for i in 0..4 {
+        // Refresh held states before checking isolation; the watchdog deliberately
+        // neutralizes a stalled producer while the next device is being created.
+        // A duplicate held state refreshes only the watchdog, not the transition
+        // queue. Release first so the blocking consumer has a real edge to read.
+        pads[i].neutral()?;
+        send_read(&mut pads[i], &mut readers[i], &states[i])?;
+    }
+    send_read(&mut pads[0], &mut readers[0], &InputState::NEUTRAL)?;
+    for i in 1..4 {
+        verify_report(&readers[i].snapshot()?, &states[i])?;
+    }
+    std::thread::sleep(Duration::from_millis(900));
+    for reader in &readers {
+        verify_report(&reader.snapshot()?, &InputState::NEUTRAL)?;
+    }
+    println!("PASS: four distinct generic classes retain isolated input state and all neutralize on a stalled producer");
+    Ok(())
+}
 pub fn benchmark(count: usize) -> Result<()> {
     let mut pad = VirtualPad::create()?;
     let mut reader = GamepadReader::open(&pad)?;

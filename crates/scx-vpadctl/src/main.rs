@@ -56,6 +56,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("PASS: installed owner can use the producer; restricted broad-user token is denied at handle open or input submission. This verifies user isolation, not isolation between processes running as the same owner.");
         }
         Some("self-test") if args.len() == 1 => verify::self_test()?,
+        Some("self-test-generic-classes") if args.len() == 1 => verify::generic_classes()?,
         Some("self-test-sony") if args.len() == 1 => verify::sony()?,
         Some("self-test-sony-multi") if args.len() == 4 => {
             verify::sony_multi(&args[1], &args[2], &args[3])?
@@ -66,7 +67,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some("status") | Some("list") if args.len() == 1 => {
             service_status()?;
-            println!("SCX VPad service available. Generic HID gamepad; experimental DS4/DS5 USB reports and Xbox/XInput. Steam persona is not implemented in this version.");
+            println!("SCX VPad service available. Supported classes depend on the installed driver version; revision .33 adds experimental wheel, flight and arcade HID to generic gamepad, DS4/DS5 and Xbox/XInput. Steam persona is not implemented.");
         }
         Some("create") | Some("demo") if args.len() <= 4 => {
             let seconds = number(args.get(1), 10, 1, 3600)?;
@@ -155,12 +156,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         _ => {
-            println!("scx-vpadctl status\nscx-vpadctl create [seconds 1..3600] [controllers 1..4] [generic|ds4|ds5|xbox]\nscx-vpadctl demo [seconds] [controllers] [generic|ds4|ds5|xbox]\nscx-vpadctl stream [generic|ds4|ds5|xbox]\nscx-vpadctl self-test\nscx-vpadctl self-test-sony\nscx-vpadctl self-test-sony-multi <wgi_probe.exe> <gameinput3_probe.exe> <GameInputRedist.dll>\nscx-vpadctl self-test-xbox-feedback\nscx-vpadctl security-check [generic|ds4|ds5|xbox]\nscx-vpadctl benchmark [samples 100..1000000] [generic|ds4|ds5|xbox]\nscx-vpadctl benchmark-hid [samples 100..100000]\n\nDS4/DS5 and Xbox are experimental. The service and locally signed UMDF2 driver must be installed once by an administrator. Normal commands never elevate. Demo, self-tests and benchmark-hid generate actual button/stick input; close games first.");
+            println!("scx-vpadctl status\nscx-vpadctl create [seconds 1..3600] [controllers 1..4] [generic|wheel|flight|arcade|ds4|ds5|xbox]\nscx-vpadctl demo [seconds] [controllers] [generic|wheel|flight|arcade|ds4|ds5|xbox]\nscx-vpadctl stream [generic|wheel|flight|arcade|ds4|ds5|xbox]\nscx-vpadctl self-test\nscx-vpadctl self-test-generic-classes\nscx-vpadctl self-test-sony\nscx-vpadctl self-test-sony-multi <wgi_probe.exe> <gameinput3_probe.exe> <GameInputRedist.dll>\nscx-vpadctl self-test-xbox-feedback\nscx-vpadctl security-check [generic|wheel|flight|arcade|ds4|ds5|xbox]\nscx-vpadctl benchmark [samples 100..1000000] [generic|wheel|flight|arcade|ds4|ds5|xbox]\nscx-vpadctl benchmark-hid [samples 100..100000]\n\nDS4/DS5 and Xbox are experimental. The service and locally signed UMDF2 driver must be installed once by an administrator. Normal commands never elevate. Demo, self-tests and benchmark-hid generate actual button/stick input; close games first.");
         }
     }
     Ok(())
 }
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 fn profile(
     value: Option<&String>,
 ) -> Result<scx_vpad_protocol::Profile, Box<dyn std::error::Error>> {
@@ -170,7 +171,10 @@ fn profile(
         Some("ds4") => Ok(Profile::DualShock4),
         Some("ds5") => Ok(Profile::DualSense),
         Some("xbox") => Ok(Profile::Xbox360),
-        _ => Err("profile must be generic, ds4, ds5 or xbox".into()),
+        Some("wheel") => Ok(Profile::Wheel),
+        Some("flight") => Ok(Profile::FlightStick),
+        Some("arcade") => Ok(Profile::ArcadeStick),
+        _ => Err("profile must be generic, wheel, flight, arcade, ds4, ds5 or xbox".into()),
     }
 }
 #[cfg(any(windows, test))]
@@ -203,6 +207,24 @@ fn decode_packet(line: &str) -> Result<[u8; 64], Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn profile_selection_only_accepts_fixed_implemented_personas() {
+        use scx_vpad_protocol::Profile;
+        for (name, expected) in [
+            ("generic", Profile::GenericHid),
+            ("wheel", Profile::Wheel),
+            ("flight", Profile::FlightStick),
+            ("arcade", Profile::ArcadeStick),
+            ("ds4", Profile::DualShock4),
+            ("ds5", Profile::DualSense),
+            ("xbox", Profile::Xbox360),
+        ] {
+            assert_eq!(profile(Some(&name.to_owned())).unwrap(), expected);
+        }
+        for name in ["steam", "5", "keyboard", "mouse", "../wheel", "wheel\0", ""] {
+            assert!(profile(Some(&name.to_owned())).is_err());
+        }
+    }
     #[test]
     fn stream_has_strict_bounds() {
         assert_eq!(decode_packet(&"00".repeat(64)).unwrap(), [0; 64]);

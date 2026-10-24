@@ -14,6 +14,8 @@ extern "C" {
 #define SCX_VPAD_HID_SUBMIT_PAYLOAD_SIZE 96u
 #define SCX_VPAD_HID_FEATURE_REPORT_SIZE 97u
 #define SCX_VPAD_CAP_AUTHENTICATED_INPUT 16u
+#define SCX_VPAD_CAP_RAW_JOYSTICK 32u
+#define SCX_VPAD_CAP_ARCADE_STICK 64u
 #define SCX_VPAD_MAX_DEVICES 16u
 #define SCX_VPAD_INPUT_PACKET_SIZE 64u
 #define SCX_VPAD_INPUT_REPORT_SIZE 18u
@@ -31,7 +33,11 @@ typedef enum SCX_VPAD_PROFILE {
     SCX_PROFILE_GENERIC_HID = 1,
     SCX_PROFILE_XBOX360 = 2,
     SCX_PROFILE_DUALSHOCK4 = 3,
-    SCX_PROFILE_DUALSENSE = 4
+    SCX_PROFILE_DUALSENSE = 4,
+    /* 5 remains reserved for the unsupported Steam persona. */
+    SCX_PROFILE_WHEEL = 6,
+    SCX_PROFILE_FLIGHT_STICK = 7,
+    SCX_PROFILE_ARCADE_STICK = 8
 } SCX_VPAD_PROFILE;
 #define SCX_VPAD_SUBMIT_CAPABILITY_OFFSET 1u
 #define SCX_VPAD_SUBMIT_INPUT_OFFSET (1u + SCX_VPAD_AUTH_CAPABILITY_SIZE)
@@ -116,8 +122,11 @@ uint32_t scx_vpad_feedback_merge(uint8_t *current, size_t length,
 
 /* Immutable profile IDs: 1=generic HID, 2=experimental Xbox XUSB function device,
  * 3=experimental DualShock4 USB, 4=experimental DualSense USB. 5=Steam unsupported.
+ * 6=wheel, 7=flight stick, 8=arcade stick: experimental generic HID classes,
+ * sharing Input64/18-byte input and the authenticated generic vendor collection.
+ * No force feedback, adaptive triggers, or keyboard/mouse device injection.
  * Profile-specific codecs are implemented; game/driver compatibility must be
- * verified separately. CAP_EXPERIMENTAL (0x80000000) is set for profiles 2/3/4.
+ * verified separately. CAP_EXPERIMENTAL (0x80000000) is set for profiles 2/3/4/6/7/8.
  * Sony HID input report size is 64 rather than generic18. Xbox HID report size
  * is zero, descriptor/attributes/encode/feature are unsupported; its INFO has
  * CAP_XINPUT (8), with no CAP_GENERIC_GAMEPAD, and uses the separate XUSB API.

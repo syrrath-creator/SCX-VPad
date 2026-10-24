@@ -113,7 +113,7 @@ internal static class Payload {
             if (!seen.Add(rel) || !files.TryGetValue(rel, out bytes) || bytes.LongLength != member.bytes || !String.Equals(Hash(bytes), member.sha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Package member verification failed: " + member.path);
         }
         if (files.Count != seen.Count + 1) throw new InvalidDataException("Unlisted files in package.");
-        foreach (var required in new[] { "installer/Install.ps1", "installer/Uninstall.ps1", "installer/GameInput.ps1", "driver/ScxVPad.dll", "bin/scx-vpad-service.exe", "LICENSE" })
+        foreach (var required in new[] { "installer/Install.ps1", "installer/Uninstall.ps1", "installer/GameInput.ps1", "installer/Service.ps1", "driver/ScxVPad.dll", "bin/scx-vpad-service.exe", "LICENSE" })
             if (!seen.Contains(required)) throw new InvalidDataException("Incomplete package: " + required);
         return files;
     }
@@ -177,8 +177,8 @@ internal sealed class SetupForm : Form {
         layout.Controls.Add(new Label { Text = "SCX VPad", AutoSize = true, Font = new Font("Segoe UI", 27, FontStyle.Bold), ForeColor = accent, Dock = DockStyle.Top }, 0, 0);
         layout.Controls.Add(new Label { Text = Program.Text("Treiber & Dienst · ", "Driver & service · ") + BuildInfo.DriverVersion + " · Windows 11 x64", UseMnemonic = false, AutoSize = true, Dock = DockStyle.Top, Margin = new Padding(3, 3, 3, 14) }, 0, 1);
         layout.Controls.Add(new Label { Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(3, 0, 3, 14), Text = Program.Text(
-            "Virtuelle Xbox 360-, DualShock 4- und DualSense-Controller für SCX.\r\nDie Einrichtung benötigt einmalig Administratorrechte und erstellt ein lokales Signaturzertifikat. Normale Controller-Verbindungen brauchen keine Adminrechte.\r\nEntwicklungsvorschau, nicht WHQL-zertifiziert. Secure Boot und Speicherintegrität bleiben unverändert.",
-            "Virtual Xbox 360, DualShock 4 and DualSense controllers for SCX.\r\nSetup needs administrator approval once and creates a local signing certificate. Normal controller connections need no administrator rights.\r\nDevelopment preview, not WHQL certified. Secure Boot and Memory Integrity stay unchanged.") }, 0, 2);
+            "Virtuelle Xbox 360-, DualShock 4-, DualSense- und generische HID-Geräte für SCX.\r\nDie Einrichtung benötigt einmalig Administratorrechte und erstellt ein lokales Signaturzertifikat. Normale Controller-Verbindungen brauchen keine Adminrechte.\r\nEntwicklungsvorschau, nicht WHQL-zertifiziert. Secure Boot und Speicherintegrität bleiben unverändert.\r\nBekannter Fehler: GameInput 4.0.302 erkennt beim späteren Spielstart mit mehreren virtuellen Controllern möglicherweise nur einen Teil. Details stehen in den Release Notes.",
+            "Virtual Xbox 360, DualShock 4, DualSense and generic HID devices for SCX.\r\nSetup needs administrator approval once and creates a local signing certificate. Normal controller connections need no administrator rights.\r\nDevelopment preview, not WHQL certified. Secure Boot and Memory Integrity stay unchanged.\r\nKnown issue: when a game starts after several virtual controllers already exist, GameInput 4.0.302 may detect only some of them. See the release notes.") }, 0, 2);
         status.Dock = DockStyle.Top; status.AutoSize = true; status.Margin = new Padding(3, 0, 3, 12); status.ForeColor = Color.FromArgb(119, 218, 197); layout.Controls.Add(status, 0, 3);
         consent.Text = Program.Text("Ich stimme der lokalen Treiber-/Zertifikateinrichtung und der Lizenz zu. SCX und Spiele sind geschlossen.", "I agree to local driver/certificate setup and the license. SCX and games are closed.");
         consent.Dock = DockStyle.Top; consent.AutoSize = true; consent.Margin = new Padding(3, 0, 3, 12); consent.CheckedChanged += delegate { RefreshButtons(); }; layout.Controls.Add(consent, 0, 4);
@@ -290,7 +290,7 @@ internal sealed class SetupForm : Form {
                         }
                     }
                 }
-                Append("Verifying embedded Preview 2 package (SHA-256) …");
+                Append("Verifying embedded development-preview package (SHA-256) …");
                 var files = Payload.ReadVerified();
                 string stage = Payload.Stage(files);
                 Append("Protected setup files: " + stage);

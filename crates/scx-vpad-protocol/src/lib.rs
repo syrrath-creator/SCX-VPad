@@ -31,6 +31,9 @@ pub const CAP_TOUCH: u32 = 4;
 pub const CAP_XINPUT: u32 = 8;
 /// Every HID submission requires the secret capability issued with its lease.
 pub const CAP_AUTHENTICATED_INPUT: u32 = 16;
+/// A generic HID joystick persona; this does not advertise force feedback.
+pub const CAP_RAW_JOYSTICK: u32 = 32;
+pub const CAP_ARCADE_STICK: u32 = 64;
 pub const CAP_EXPERIMENTAL: u32 = 0x8000_0000;
 pub const BUTTON_SOUTH: u32 = 1 << 0;
 pub const BUTTON_EAST: u32 = 1 << 1;
@@ -61,28 +64,60 @@ pub enum Profile {
     DualShock4 = 3,
     DualSense = 4,
     Steam = 5,
+    Wheel = 6,
+    FlightStick = 7,
+    ArcadeStick = 8,
 }
 impl Profile {
     /// Reserved profile identifiers do not imply an implemented emulation mode.
     pub const fn is_supported(self) -> bool {
         matches!(
             self,
-            Self::GenericHid | Self::Xbox360 | Self::DualShock4 | Self::DualSense
+            Self::GenericHid
+                | Self::Xbox360
+                | Self::DualShock4
+                | Self::DualSense
+                | Self::Wheel
+                | Self::FlightStick
+                | Self::ArcadeStick
         )
     }
     pub const fn is_experimental(self) -> bool {
-        matches!(self, Self::Xbox360 | Self::DualShock4 | Self::DualSense)
+        matches!(
+            self,
+            Self::Xbox360
+                | Self::DualShock4
+                | Self::DualSense
+                | Self::Wheel
+                | Self::FlightStick
+                | Self::ArcadeStick
+        )
+    }
+    /// These original HID personas share the authenticated vendor collection.
+    /// Sony uses its separate mapped producer channel and must not match here.
+    pub const fn is_generic_hid(self) -> bool {
+        matches!(
+            self,
+            Self::GenericHid | Self::Wheel | Self::FlightStick | Self::ArcadeStick
+        )
     }
     pub const fn report_size(self) -> usize {
         match self {
-            Self::GenericHid => HID_REPORT_SIZE,
+            Self::GenericHid | Self::Wheel | Self::FlightStick | Self::ArcadeStick => {
+                HID_REPORT_SIZE
+            }
             Self::DualShock4 | Self::DualSense => 64,
             _ => 0,
         }
     }
     pub const fn submit_size(self) -> usize {
         match self {
-            Self::GenericHid | Self::DualShock4 | Self::DualSense => HID_SUBMIT_PAYLOAD_SIZE,
+            Self::GenericHid
+            | Self::DualShock4
+            | Self::DualSense
+            | Self::Wheel
+            | Self::FlightStick
+            | Self::ArcadeStick => HID_SUBMIT_PAYLOAD_SIZE,
             Self::Xbox360 => INPUT_PACKET_SIZE,
             _ => 0,
         }
@@ -90,6 +125,12 @@ impl Profile {
     pub const fn capabilities(self) -> u32 {
         match self {
             Self::GenericHid => CAP_GENERIC_GAMEPAD | CAP_AUTHENTICATED_INPUT,
+            Self::Wheel | Self::FlightStick => {
+                CAP_GENERIC_GAMEPAD | CAP_AUTHENTICATED_INPUT | CAP_RAW_JOYSTICK | CAP_EXPERIMENTAL
+            }
+            Self::ArcadeStick => {
+                CAP_GENERIC_GAMEPAD | CAP_AUTHENTICATED_INPUT | CAP_ARCADE_STICK | CAP_EXPERIMENTAL
+            }
             Self::Xbox360 => CAP_XINPUT | CAP_EXPERIMENTAL,
             Self::DualShock4 | Self::DualSense => {
                 CAP_GENERIC_GAMEPAD
@@ -111,6 +152,9 @@ impl TryFrom<u32> for Profile {
             3 => Ok(Self::DualShock4),
             4 => Ok(Self::DualSense),
             5 => Ok(Self::Steam),
+            6 => Ok(Self::Wheel),
+            7 => Ok(Self::FlightStick),
+            8 => Ok(Self::ArcadeStick),
             _ => Err(ValidationError::Profile),
         }
     }
@@ -674,7 +718,14 @@ mod tests {
         assert_eq!(HID_FEATURE_REPORT_SIZE, 97);
         assert_eq!(AUTH_CAPABILITY_SIZE, 32);
         assert_eq!(SUBMIT_FEATURE_ID, 0x7a);
-        for profile in [Profile::GenericHid, Profile::DualShock4, Profile::DualSense] {
+        for profile in [
+            Profile::GenericHid,
+            Profile::DualShock4,
+            Profile::DualSense,
+            Profile::Wheel,
+            Profile::FlightStick,
+            Profile::ArcadeStick,
+        ] {
             let info = DeviceInfo::for_profile(profile);
             let canonical = info.encode();
             assert_eq!(read_u16(&canonical, 4), DEVICE_INFO_VERSION);
@@ -723,6 +774,46 @@ mod tests {
         assert!(!sequence_after(9, 10));
         assert!(sequence_after(10, 9));
         assert!(!sequence_after(0x80000000, 0));
+    }
+    #[test]
+    fn simulation_personas_extend_ids_without_changing_existing_abi() {
+        assert_eq!(
+            (ABI_VERSION, INPUT_PACKET_SIZE, FEEDBACK_PACKET_SIZE),
+            (1, 64, 32)
+        );
+        for (raw, profile, capability) in [
+            (6, Profile::Wheel, CAP_RAW_JOYSTICK),
+            (7, Profile::FlightStick, CAP_RAW_JOYSTICK),
+            (8, Profile::ArcadeStick, CAP_ARCADE_STICK),
+        ] {
+            assert_eq!(Profile::try_from(raw), Ok(profile));
+            assert!(
+                profile.is_supported() && profile.is_experimental() && profile.is_generic_hid()
+            );
+            assert_eq!((profile.report_size(), profile.submit_size()), (18, 96));
+            assert_eq!(
+                profile.capabilities(),
+                CAP_GENERIC_GAMEPAD | CAP_AUTHENTICATED_INPUT | CAP_EXPERIMENTAL | capability
+            );
+            assert_eq!(
+                profile.capabilities() & (CAP_XINPUT | CAP_MOTION | CAP_TOUCH),
+                0
+            );
+            let feedback = Feedback::empty(profile);
+            assert_eq!(Feedback::decode(&feedback.encode()), Ok(feedback));
+        }
+        for profile in [
+            Profile::Xbox360,
+            Profile::DualShock4,
+            Profile::DualSense,
+            Profile::Steam,
+        ] {
+            assert!(!profile.is_generic_hid());
+        }
+        assert!(!Profile::Steam.is_supported());
+        for raw in [0, 9, 32, u32::MAX] {
+            assert_eq!(Profile::try_from(raw), Err(ValidationError::Profile));
+        }
     }
     #[test]
     fn adversarial_packet_mutations_never_panic_or_bypass_validation() {

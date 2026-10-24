@@ -8,6 +8,14 @@
 #include "scx_trace.h"
 #define SCX_STALE_MS 500ull
 
+/* Generic classes share the fixed Rust descriptor's private HID transport.
+ * Sony retains its separate authenticated channel and never exposes it. */
+static BOOLEAN ScxGenericHidProfile(uint32_t profile)
+{
+    return profile == SCX_PROFILE_GENERIC_HID || profile == SCX_PROFILE_WHEEL ||
+           profile == SCX_PROFILE_FLIGHT_STICK || profile == SCX_PROFILE_ARCADE_STICK;
+}
+
 static const DEVPROPKEY ScxProfileKey = {
     {0x19f81049,0x3679,0x40f2,{0x96,0x89,0x2a,0x2f,0x61,0xf8,0xbd,0x29}}, 2
 };
@@ -194,7 +202,7 @@ static NTSTATUS ScxSubmit(SCX_DEVICE *ctx, WDFREQUEST request, size_t reportId)
     const uint8_t *bytes;
     NTSTATUS status;
     /* Sony game-facing HID never accepts SCX transport packets. */
-    if (ctx->Profile != SCX_PROFILE_GENERIC_HID || reportId != SCX_VPAD_SUBMIT_FEATURE_ID) return STATUS_ACCESS_DENIED;
+    if (!ScxGenericHidProfile(ctx->Profile) || reportId != SCX_VPAD_SUBMIT_FEATURE_ID) return STATUS_ACCESS_DENIED;
     status = WdfRequestRetrieveInputMemory(request, &memory);
     if (!NT_SUCCESS(status)) return status;
     bytes = (const uint8_t *)WdfMemoryGetBuffer(memory, &length);
@@ -211,7 +219,7 @@ static NTSTATUS ScxSetFeature(SCX_DEVICE *ctx, WDFREQUEST request, size_t report
     size_t length;
     uint32_t result;
     NTSTATUS status;
-    if (ctx->Profile == SCX_PROFILE_GENERIC_HID) return ScxSubmit(ctx, request, reportId);
+    if (ScxGenericHidProfile(ctx->Profile)) return ScxSubmit(ctx, request, reportId);
     if (!ctx->Online) return STATUS_DEVICE_NOT_READY;
     status = WdfRequestRetrieveInputMemory(request, &memory);
     if (!NT_SUCCESS(status)) return status;
@@ -259,9 +267,9 @@ static NTSTATUS ScxGetFeature(SCX_DEVICE *ctx, WDFREQUEST request)
     if (!NT_SUCCESS(status)) return status;
     /* Keep SCX's transport/diagnostic reports off the Sony game-facing HID.
      * Feedback is exclusively delivered through the owned sideband channel. */
-    if (ctx->Profile != SCX_PROFILE_GENERIC_HID && id >= 0x78 && id <= 0x7f)
+    if (!ScxGenericHidProfile(ctx->Profile) && id >= 0x78 && id <= 0x7f)
         return STATUS_NOT_SUPPORTED;
-    if (ctx->Profile == SCX_PROFILE_GENERIC_HID && id == SCX_VPAD_INFO_FEATURE_ID) {
+    if (ScxGenericHidProfile(ctx->Profile) && id == SCX_VPAD_INFO_FEATURE_ID) {
         uint8_t info[1 + SCX_VPAD_INFO_PACKET_SIZE] = {SCX_VPAD_INFO_FEATURE_ID};
         status = ScxStatus(scx_vpad_get_info_for_profile(ctx->Profile, info + 1, SCX_VPAD_INFO_PACKET_SIZE));
         return NT_SUCCESS(status) ? ScxCopy(request, info, sizeof(info)) : status;
@@ -312,7 +320,14 @@ static NTSTATUS ScxString(SCX_DEVICE *ctx, WDFREQUEST request)
     case HID_STRING_ID_IPRODUCT:
         /* Public compatibility names; PnP/service/provider remain branded SCX.
          * Games can identify Sony controllers by the HID product string. */
-        text = ctx->Profile == SCX_PROFILE_DUALSHOCK4 ? L"Wireless Controller" : ctx->Profile == SCX_PROFILE_DUALSENSE ? L"DualSense Wireless Controller" : L"SCX Virtual Gamepad";
+        switch (ctx->Profile) {
+        case SCX_PROFILE_DUALSHOCK4: text = L"Wireless Controller"; break;
+        case SCX_PROFILE_DUALSENSE: text = L"DualSense Wireless Controller"; break;
+        case SCX_PROFILE_WHEEL: text = L"SCX Virtual Racing Wheel"; break;
+        case SCX_PROFILE_FLIGHT_STICK: text = L"SCX Virtual Flight Stick"; break;
+        case SCX_PROFILE_ARCADE_STICK: text = L"SCX Virtual Arcade Stick"; break;
+        default: text = L"SCX Virtual Gamepad"; break;
+        }
         break;
     case HID_STRING_ID_ISERIALNUMBER:
         /* HID consumers do not necessarily inspect our PnP parent identity.
@@ -493,7 +508,7 @@ NTSTATUS ScxDeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     status = WdfIoQueueCreate(device, &queue, WDF_NO_OBJECT_ATTRIBUTES, WDF_NO_HANDLE);
     if (!NT_SUCCESS(status)) return status;
     ctx->Online = TRUE;
-    if (ctx->Profile != SCX_PROFILE_GENERIC_HID) return ScxChannelStart(device, ctx);
+    if (!ScxGenericHidProfile(ctx->Profile)) return ScxChannelStart(device, ctx);
     return STATUS_SUCCESS;
 }
 

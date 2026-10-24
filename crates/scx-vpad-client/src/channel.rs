@@ -240,7 +240,12 @@ impl Channel {
             }
             return Ok(f);
         }
-        Err(fail("unstable channel feedback"))
+        // The driver can be descheduled between the odd/even publications.
+        // Contention is transient, not a malformed packet or disconnected pad.
+        Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "feedback publication in progress",
+        ))
     }
     pub fn read_feedback(
         &self,
@@ -253,10 +258,14 @@ impl Channel {
             if self.load(12) != 1 {
                 return Err(fail("feedback channel disconnected"));
             }
-            let f = self.snapshot(profile)?;
-            if f.sequence != *last {
-                *last = f.sequence;
-                return Ok(f);
+            match self.snapshot(profile) {
+                Ok(f) if f.sequence != *last => {
+                    *last = f.sequence;
+                    return Ok(f);
+                }
+                Ok(_) => (),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => (),
+                Err(e) => return Err(e),
             }
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -369,6 +378,41 @@ mod tests {
         assert!(c
             .submit(&Capability::default(), &InputState::NEUTRAL)
             .is_err());
+    }
+    #[test]
+    fn preempted_feedback_writer_waits_without_killing_the_connection() {
+        let (writer, reader) = pair();
+        writer.word(28).store(1, Ordering::SeqCst);
+        assert_eq!(
+            reader.snapshot(Profile::DualSense).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        let mut sequence = 0;
+        // A genuinely stalled writer remains bounded by the caller's timeout,
+        // and no partially written feedback or new sequence is exposed.
+        assert_eq!(
+            reader
+                .read_feedback(Profile::DualSense, &mut sequence, 5)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert_eq!(sequence, 0);
+        let publishing = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            writer.word(196).store(7, Ordering::SeqCst);
+            writer.word(28).store(2, Ordering::SeqCst);
+            check(unsafe { SetEvent(writer.feedback.0) }).unwrap();
+        });
+        assert_eq!(
+            reader
+                .read_feedback(Profile::DualSense, &mut sequence, 1000)
+                .unwrap()
+                .sequence,
+            7
+        );
+        publishing.join().unwrap();
+        assert_eq!(sequence, 7);
     }
     #[test]
     fn channel_name_cannot_escape_lease_namespace() {

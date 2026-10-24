@@ -171,7 +171,20 @@ impl Bootstrap {
         if disposition != REG_CREATED_NEW_KEY {
             return Err(fail("bootstrap identifier collision"));
         }
-        let channel = if matches!(
+        // Own deletion immediately: channel allocation/security failures must
+        // not leave an orphan capability key behind.
+        Self {
+            id,
+            capability,
+            root,
+            key: Some(key),
+            _channel: None,
+        }
+        .finish(owner, profile)
+    }
+
+    fn finish(mut self, owner: &str, profile: scx_vpad_protocol::Profile) -> io::Result<Self> {
+        self._channel = if matches!(
             profile,
             scx_vpad_protocol::Profile::DualShock4 | scx_vpad_protocol::Profile::DualSense
         ) {
@@ -184,31 +197,24 @@ impl Bootstrap {
                 bInheritHandle: 0,
             };
             Some(scx_vpad_client::channel::Channel::create(
-                &id,
+                &self.id,
                 &channel_sa,
                 profile,
             )?)
         } else {
             None
         };
-        let entry = Self {
-            id,
-            capability,
-            root,
-            key: Some(key),
-            _channel: channel,
-        };
         result(unsafe {
             RegSetValueExW(
-                entry.key.as_ref().unwrap().0,
+                self.key.as_ref().unwrap().0,
                 wide("Capability").as_ptr(),
                 0,
                 REG_BINARY,
-                entry.capability.bytes().as_ptr(),
+                self.capability.bytes().as_ptr(),
                 32,
             )
         })?;
-        Ok(entry)
+        Ok(self)
     }
 }
 impl Drop for Bootstrap {
@@ -224,6 +230,81 @@ impl Drop for Bootstrap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_channel_setup_removes_its_new_bootstrap_key() {
+        // Exercise the actual registry deletion guard without touching HKLM or
+        // requiring an elevated test runner. The private root is also removed
+        // on assertion failure.
+        struct TestRoot(String, Key);
+        impl Drop for TestRoot {
+            fn drop(&mut self) {
+                unsafe {
+                    RegDeleteTreeW(HKEY_CURRENT_USER, wide(&self.0).as_ptr());
+                }
+            }
+        }
+        let name = format!(r"Software\SCX.VPad.Tests\bootstrap-{}", std::process::id());
+        let mut root = ptr::null_mut();
+        result(unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                wide(&name).as_ptr(),
+                0,
+                ptr::null(),
+                REG_OPTION_VOLATILE,
+                KEY_ALL_ACCESS,
+                ptr::null(),
+                &mut root,
+                ptr::null_mut(),
+            )
+        })
+        .unwrap();
+        let root = TestRoot(name, Key(root));
+        let id = "0123456789abcdef0123456789abcdef";
+        let mut lease = ptr::null_mut();
+        result(unsafe {
+            RegCreateKeyExW(
+                root.1 .0,
+                wide(id).as_ptr(),
+                0,
+                ptr::null(),
+                REG_OPTION_VOLATILE,
+                KEY_ALL_ACCESS,
+                ptr::null(),
+                &mut lease,
+                ptr::null_mut(),
+            )
+        })
+        .unwrap();
+        let mut duplicate_root = ptr::null_mut();
+        result(unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                wide(&root.0).as_ptr(),
+                0,
+                KEY_ALL_ACCESS,
+                &mut duplicate_root,
+            )
+        })
+        .unwrap();
+        let bootstrap = Bootstrap {
+            id: id.into(),
+            capability: Capability::new([19; 32]),
+            root: Key(duplicate_root),
+            key: Some(Key(lease)),
+            _channel: None,
+        };
+        // This fails inside finish while parsing the channel's owner SID,
+        // before creating any global mapping/event or writing a capability.
+        assert!(bootstrap
+            .finish("not-a-sid", scx_vpad_protocol::Profile::DualSense)
+            .is_err());
+        let mut missing = ptr::null_mut();
+        assert_eq!(
+            unsafe { RegOpenKeyExW(root.1 .0, wide(id).as_ptr(), 0, KEY_READ, &mut missing) },
+            ERROR_FILE_NOT_FOUND
+        );
+    }
     #[test]
     fn bootstrap_key_names_cannot_escape_the_owned_subtree() {
         assert!(valid_id("0123456789abcdef0123456789abcdef"));

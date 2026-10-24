@@ -3,6 +3,31 @@
 An independently implemented Windows virtual-controller driver with a Rust core,
 a small UMDF2 binding, and a restricted Rust service for device management.
 
+**Preview 4 — native driver 0.1.0.33; known multi-controller limitation.** This
+is an experimental preview, not a stable or production-certified release.
+GameInput 4.0.302 can miss virtual controllers when a game or other consumer
+starts after several SCX devices already exist: a four-Sony test sees only two.
+Mixed profiles and generic devices are also affected. HID/DirectInput and WGI
+checks do not make this GameInput case pass. Do not rely on this preview for
+multi-controller GameInput use; the issue is unresolved. Details and the exact
+scope of testing are in [VALIDATION.md](VALIDATION.md).
+
+The source adds
+input-only HID wheel, flight-stick and arcade-stick profiles, each with 32
+buttons, a hat and six axes. Their fixed descriptors, encoding and queue logic
+are implemented in Rust; the thin WDF binding remains C. These profiles require
+the matching .33 service/driver and do not implement force feedback or arbitrary
+physical-device drivers. See [SDK](SDK.md) for control meanings and
+[validation](VALIDATION.md) for the distinction between build and installed tests.
+An earlier .33 diagnostic build passed installed generic-class, native HID,
+Sony/Xbox input and feedback, and effective-access checks. The final Preview 4
+payload contains subsequent Rust and installer audit changes and has build and
+isolated-test coverage; it has not completed a fresh installed regression run.
+The GameInput omission also reproduces with installed .32. Shared-container
+and topology experiments are excluded from this package; individual device
+identities are retained. There is no timing workaround or reduced device-count
+assertion presented as a fix.
+
 **Native driver 0.1.0.32 — Sony device identity update.** Independently implemented architecture, with
 attributed MIT Sony compatibility tables from HIDMaestro. This is an experimental
 driver and SDK, not a production-certified
@@ -36,6 +61,9 @@ explicit backpressure and stale-input neutralization.
 
 - Generic HID gamepad: 32 buttons, hat, four signed stick axes and two unsigned
   trigger axes. This profile was exercised through real Windows HID readers.
+- Native .33 preview: input-only wheel, flight-stick and arcade-stick classes
+  with the same bounded controls and class-specific HID axis usages. No force
+  feedback or guarantee of automatic game-specific controller classification.
 - Experimental Xbox/XInput-compatible UMDF function device, with an original
   XUSB request dispatcher. This is separate from the generic HID profile.
 - Experimental DualShock 4 and DualSense USB-style HID protocols: buttons,
@@ -67,11 +95,11 @@ preserves the installation seed and authorized Windows account.
 The controlled Tekken 8 test accepts the virtual DualSense input; the subsequent
 physical Edge route also received a positive Gears of War: E-Day input report.
 Earlier Gears game-rumble evidence is retained separately in VALIDATION.md.
-Four Sony controllers (DS4, DS5 and mixed) pass distinct HID/WGI/GameInput v3
-identity checks, independent HID/WGI input, feedback isolation and partial
-removal. The final multi-controller test passed twice after correcting the
-external GameInput probe's input-kind filter; no driver workaround was needed
-for that probe issue. See VALIDATION.md for the exact scope and limitations.
+Earlier .32 tests recorded four-controller identity passes, independent
+HID/WGI input, feedback isolation and partial removal. Those historical passes
+do not establish reliable late-start GameInput discovery: the current stricter
+check still fails as described above. See VALIDATION.md for the chronology and
+scope of each result.
 Do not assume universal game support from a protocol or enumeration test.
 
 ## Build
@@ -101,8 +129,9 @@ a file-hash manifest. It does not install anything or modify Windows trust.
 
 ### Recommended: Windows Setup EXE
 
-Download **[SCX-VPad-0.1.0.32-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.0-preview.3/SCX-VPad-0.1.0.32-Setup-x64.exe)**
-from the Preview 3 release. Its separate `Setup-SHA256SUMS.txt` asset
+Download **[SCX-VPad-0.1.0.33-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.0-preview.4/SCX-VPad-0.1.0.33-Setup-x64.exe)**
+from the Preview 4 release, after reviewing its known GameInput limitation.
+Its separate `SHA256SUMS.txt` asset
 contains the EXE checksum. No ZIP extraction or terminal commands are needed.
 
 1. Close SCX and games. Start the EXE by double-clicking it from the Windows
@@ -112,7 +141,7 @@ contains the EXE checksum. No ZIP extraction or terminal commands are needed.
 3. Wait for the success message, then open SCX, select **SCX VPad** and connect.
    Restart Windows first if the installer requests it.
 
-The EXE installs the driver **and** its service using the verified Preview 3
+The EXE installs the driver **and** its service using the hash-verified Preview 4
 package. It includes German and English interfaces and works offline.
 If already installed, **Reinstall** replaces this revision and retains the
 authorized Windows account and stable device identity seed. Driver updates still require administrator approval;
@@ -187,11 +216,11 @@ wraps the Rust driver/service package; it does not rebuild or change them.
 Build from an already validated package and supply its independently verified hash:
 
 ```powershell
-./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.32-preview.3-windows-x64.zip -ExpectedSha256 $verifiedReleaseSha256 -OutputDirectory ./artifacts/setup
-./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.32-preview.3-windows-x64.zip -BuildDirectory ./artifacts/setup
+./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.33-preview.4-windows-x64.zip -ExpectedSha256 $verifiedReleaseSha256 -OutputDirectory ./artifacts/setup
+./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.33-preview.4-windows-x64.zip -BuildDirectory ./artifacts/setup
 ```
 
-The Setup and ZIP in Preview 3 contain the same verified native revision .32.
+The Setup and ZIP in Preview 4 contain the same hash-verified native revision .33.
 Earlier preview releases remain available as historical downloads.
 
 ## License and commercial distribution

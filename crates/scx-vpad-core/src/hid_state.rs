@@ -50,7 +50,7 @@ impl HidState {
             return Err(QueueError::StaleSequence);
         }
         let profile = Profile::try_from(self.profile).map_err(|_| QueueError::InvalidInput)?;
-        let report = profiles::encode(profile, &input).ok_or(QueueError::InvalidInput)?;
+        let report = profiles::encode_validated(profile, &input).ok_or(QueueError::InvalidInput)?;
         let length = self.report_length as usize;
         if report[..length] != self.current[..length] {
             if self.count as usize == CAPACITY {
@@ -63,7 +63,13 @@ impl HidState {
         }
         self.last_sequence = input.sequence;
         self.has_sequence = 1;
-        Ok(input.is_neutral())
+        // Raw HID personas expose no sensors/touches. Only their actual
+        // buttons/hat/axes may keep the watchdog's release state active.
+        Ok(if profile.is_generic_hid() {
+            report[..length] == self.neutral[..length]
+        } else {
+            input.is_neutral()
+        })
     }
     pub fn front(&self) -> Option<&[u8]> {
         (self.count != 0).then(|| &self.reports[self.head as usize][..self.report_length as usize])
@@ -104,7 +110,14 @@ mod tests {
     }
     #[test]
     fn preserves_press_release_and_failed_reader_does_not_consume() {
-        for profile in [Profile::GenericHid, Profile::DualShock4, Profile::DualSense] {
+        for profile in [
+            Profile::GenericHid,
+            Profile::DualShock4,
+            Profile::DualSense,
+            Profile::Wheel,
+            Profile::FlightStick,
+            Profile::ArcadeStick,
+        ] {
             let mut q = HidState::new(profile).unwrap();
             assert_eq!(q.front().unwrap(), q.current());
             q.consume();
@@ -170,8 +183,14 @@ mod tests {
     }
     #[test]
     fn identical_reports_do_not_fill_queue_and_devices_are_independent() {
+        let profiles = [
+            Profile::GenericHid,
+            Profile::Wheel,
+            Profile::FlightStick,
+            Profile::ArcadeStick,
+        ];
         let mut queues: [HidState; 4] =
-            core::array::from_fn(|_| HidState::new(Profile::GenericHid).unwrap());
+            core::array::from_fn(|i| HidState::new(profiles[i]).unwrap());
         for q in &mut queues {
             q.consume();
         }
@@ -200,5 +219,45 @@ mod tests {
         assert!(q.front().is_none());
         assert_eq!(q.submit(&packet(63, 1)), Err(QueueError::StaleSequence));
         q.submit(&packet(64, 1)).unwrap();
+    }
+    #[test]
+    fn unused_sensor_fields_do_not_hold_generic_watchdog_but_sony_is_unchanged() {
+        use scx_vpad_protocol::{FLAG_GYRO_VALID, FLAG_TOUCH_VALID, TOUCH_ACTIVE};
+        let mut input = InputState {
+            sequence: 1,
+            flags: FLAG_GYRO_VALID | FLAG_TOUCH_VALID,
+            gyro: [123, -45, 67],
+            ..InputState::NEUTRAL
+        };
+        input.touches[0].flags = TOUCH_ACTIVE;
+        input.touches[0].x = 50_000;
+        assert!(input.validate().is_ok());
+        assert!(!input.is_neutral());
+        for profile in [
+            Profile::GenericHid,
+            Profile::Wheel,
+            Profile::FlightStick,
+            Profile::ArcadeStick,
+            Profile::DualShock4,
+            Profile::DualSense,
+        ] {
+            let mut state = HidState::new(profile).unwrap();
+            state.consume();
+            assert_eq!(state.submit(&input.encode()), Ok(profile.is_generic_hid()));
+            if profile.is_generic_hid() {
+                assert!(state.front().is_none());
+            }
+            let mut press = input;
+            press.sequence = 2;
+            press.left_trigger = 1;
+            assert_eq!(state.submit(&press.encode()), Ok(false));
+            press.sequence = 3;
+            press.left_trigger = 0;
+            assert_eq!(state.submit(&press.encode()), Ok(profile.is_generic_hid()));
+            // Ignoring unexposed controls never bypasses canonical validation.
+            press.sequence = 4;
+            press.touches[0].flags = 2;
+            assert_eq!(state.submit(&press.encode()), Err(QueueError::InvalidInput));
+        }
     }
 }
