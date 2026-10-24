@@ -1,11 +1,13 @@
 # SCX original Windows binding
 
-Revision .28 uses the ROOT-enumeration sentinel container for Sony profiles,
-matching the working Maestro device policy. This does not merge ownership:
-each controller retains its own PnP path, Sony identity, lease and authenticated
-channel. Four Sony controllers remain distinct through HID, WGI and GameInput
-v3, including after removal of a sibling. Xbox/generic containers are unchanged.
-See VALIDATION.md for the Gears result and the unreproduced transient episode.
+Revision .35 retains the independent stable Sony containers introduced in .32.
+Each controller has its own PnP path, identity, lease and authenticated channel;
+it is not assigned the historical shared PC/root-sentinel container from .28.
+The explicit service reconnect operation preserves those identities while
+recovering the tested late-start GameInput discovery case. Source Guard is a
+separate device-specific UMDF2 filter for the qualified Edge Bluetooth source;
+it prevents physical-plus-virtual duplicate input during an active source lease.
+See VALIDATION.md for installed evidence and the scope of the GameInput workaround.
 
 Sony diagnosis can explicitly enable the ETW provider `SCX-VPad-Diagnostics`
 (`05b6b2fc-a45b-4b7c-8c94-3b2ce386b1e5`, keyword 1, informational level).
@@ -41,14 +43,14 @@ binary. The Windows inbox `mshidumdf` bridge and `WUDFRd` reflector are required
 
 Profile 1 is an original generic HID gamepad with 32 buttons, a hat, four signed
 stick axes and two unsigned trigger axes. It is **not XInput**. Profiles 3 and 4
-implement experimental DualShock 4 and DualSense USB-compatible reports,
+implement DualShock 4 and DualSense USB-compatible reports within the documented scope,
 synthetic calibration/identity, motion and touch fields, rumble and supported
 LED feedback. State encoders are original; public USB descriptors and firmware
 metadata tables are adapted from MIT-licensed HIDMaestro with attribution in
 THIRD-PARTY-NOTICES.txt and licenses/HIDMaestro-MIT.txt. They set the experimental
 capability bit until device/game testing verifies compatibility. Profile 2 is
-an experimental Xbox-compatible XUSB function device whose Windows XInput discovery
-and game compatibility require a separate live validation. Steam output is not
+an Xbox-compatible XUSB function device whose Windows XInput discovery
+and game compatibility are covered separately by installed validation. Steam output is not
 implemented. Adaptive trigger programs and USB audio
 are explicitly unsupported. Generic HID does not expose motion/touch or rumble.
 

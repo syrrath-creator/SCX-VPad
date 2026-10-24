@@ -561,4 +561,144 @@ mod tests {
         assert_eq!(legacy.length, 20);
         assert_eq!(&legacy.bytes[3..7], &42u32.to_le_bytes());
     }
+
+    #[test]
+    fn cached_controls_match_complete_report_changes_and_watchdog_neutral() {
+        // The WDF binding caches only bytes 11..23. Establish independently
+        // that no other byte of a packet-number-zero state report changes
+        // with accepted Input64, including unsupported controls and sensors.
+        let mut previous = state_report(&InputState::NEUTRAL, 0, false);
+        let mut cached = [0; 12];
+        for i in 0..20_000u32 {
+            let state = InputState {
+                sequence: i,
+                buttons: i.wrapping_mul(0x9e37_79b9),
+                hat: (i % 9) as u8,
+                left_x: i.wrapping_mul(1297) as i16,
+                left_y: i.wrapping_mul(2531) as i16,
+                right_x: i.wrapping_mul(541) as i16,
+                right_y: i.wrapping_mul(711) as i16,
+                left_trigger: i.wrapping_mul(257) as u16,
+                right_trigger: i.wrapping_mul(701) as u16,
+                flags: FLAG_GYRO_VALID | FLAG_ACCEL_VALID,
+                gyro: [i as i16, i.wrapping_neg() as i16, i as i16],
+                accel: [1, 2, 3],
+                timestamp_us: u64::from(i) * 997,
+                ..InputState::NEUTRAL
+            };
+            let encoded = state.encode();
+            let mut next = [0xcc; 29];
+            // SAFETY: disjoint local arrays have the exact declared sizes.
+            assert_eq!(
+                unsafe {
+                    scx_vpad_xusb_state_report(
+                        encoded.as_ptr(),
+                        encoded.len(),
+                        0,
+                        0,
+                        next.as_mut_ptr(),
+                        next.len(),
+                    )
+                },
+                STATUS_OK
+            );
+            assert_eq!(previous != next, cached != next[11..23]);
+            assert_eq!(&next[..11], &previous[..11]);
+            assert_eq!(&next[23..], &previous[23..]);
+            assert_eq!(next[11..23] == [0; 12], gamepad(&state) == [0; 12]);
+            cached.copy_from_slice(&next[11..23]);
+            previous = next;
+            if i % 37 == 0 {
+                // A timeout releases controls and resets the corresponding
+                // cache, retaining the separate replay sequence in the driver.
+                previous = state_report(&InputState::NEUTRAL, 0, false);
+                cached.fill(0);
+                assert_ne!(cached, next[11..23]);
+            }
+        }
+        let baseline = state_report(&InputState::NEUTRAL, 0, false);
+        let unused = InputState {
+            buttons: BUTTON_TOUCHPAD
+                | BUTTON_MICROPHONE
+                | BUTTON_LEFT_TRIGGER
+                | BUTTON_RIGHT_TRIGGER,
+            gyro: [123, 456, 789],
+            flags: FLAG_GYRO_VALID,
+            sequence: 999,
+            timestamp_us: 88_888,
+            ..InputState::NEUTRAL
+        };
+        assert_eq!(state_report(&unused, 0, false), baseline);
+        // Quantized trigger movement below one XInput unit stays neutral.
+        for value in [0, 1, 128, 256] {
+            assert_eq!(
+                gamepad(&InputState {
+                    left_trigger: value,
+                    ..unused
+                }),
+                [0; 12]
+            );
+        }
+        assert_ne!(
+            gamepad(&InputState {
+                left_trigger: 257,
+                ..unused
+            }),
+            [0; 12]
+        );
+    }
+
+    #[test]
+    fn single_pass_state_encoder_rejects_invalid_input_without_output_mutation() {
+        let valid = InputState::NEUTRAL.encode();
+        let mut output = [0xcc; 31];
+        for length in 0..=128 {
+            if length == INPUT_PACKET_SIZE {
+                continue;
+            }
+            // SAFETY: unsupported lengths are rejected before dereferencing.
+            assert_eq!(
+                unsafe {
+                    scx_vpad_xusb_state_report(
+                        valid.as_ptr(),
+                        length,
+                        0,
+                        0,
+                        output.as_mut_ptr().add(1),
+                        29,
+                    )
+                },
+                STATUS_INVALID_LENGTH
+            );
+            assert_eq!(output, [0xcc; 31]);
+        }
+        for (offset, invalid) in [
+            (0, 2),
+            (2, 63),
+            (24, 9),
+            (25, 8),
+            (26, 1),
+            (45, 2),
+            (51, 2),
+            (60, 1),
+        ] {
+            let mut packet = valid;
+            packet[offset] = invalid;
+            // SAFETY: local input/output buffers are disjoint and sized.
+            assert_eq!(
+                unsafe {
+                    scx_vpad_xusb_state_report(
+                        packet.as_ptr(),
+                        packet.len(),
+                        0,
+                        0,
+                        output.as_mut_ptr().add(1),
+                        29,
+                    )
+                },
+                STATUS_INVALID_PACKET
+            );
+            assert_eq!(output, [0xcc; 31]);
+        }
+    }
 }

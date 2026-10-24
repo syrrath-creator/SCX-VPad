@@ -43,7 +43,7 @@ There are at most 16 simultaneous devices, four leases per client process, and
 four Xbox-compatible devices system-wide within this service. Other implemented
 profiles are `GenericHid`, `DualShock4`, and `DualSense`; native revision .33 adds
 `Wheel`, `FlightStick`, and `ArcadeStick`. Xbox and Sony compatibility
-paths remain experimental; Sony profiles do not implement every physical-controller
+paths have the documented compatibility scope; Sony profiles do not implement every physical-controller
 feature. The generic
 HID profile is not an XInput controller. See [validation](VALIDATION.md) for the
 tested compatibility limits and [security](SECURITY.md) for the lease boundary.

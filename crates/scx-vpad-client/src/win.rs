@@ -68,28 +68,53 @@ pub fn transfer_with_cancellation(
     cancel: HANDLE,
     timeout: u32,
 ) -> io::Result<usize> {
-    let length = u32::try_from(buffer.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "I/O buffer too large"))?;
-    let event = Handle::event()?;
-    let mut ov = OVERLAPPED {
-        hEvent: event.0,
-        ..Default::default()
-    };
-    let mut n = 0;
-    let ok = unsafe {
-        if write {
-            WriteFile(handle.0, buffer.as_ptr(), length, &mut n, &mut ov)
-        } else {
-            ReadFile(handle.0, buffer.as_mut_ptr(), length, &mut n, &mut ov)
+    Transfer::new()?.run(handle, buffer, write, stop, cancel, timeout)
+}
+
+/// Serial control-plane transfers reuse one event instead of creating and
+/// closing a kernel object for every heartbeat. Mutable access prevents two
+/// outstanding operations from sharing the completion event.
+pub struct Transfer {
+    event: Handle,
+}
+impl Transfer {
+    pub fn new() -> io::Result<Self> {
+        Ok(Self {
+            event: Handle::event()?,
+        })
+    }
+    pub fn run(
+        &mut self,
+        handle: &Handle,
+        buffer: &mut [u8],
+        write: bool,
+        stop: HANDLE,
+        cancel: HANDLE,
+        timeout: u32,
+    ) -> io::Result<usize> {
+        let length = u32::try_from(buffer.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "I/O buffer too large"))?;
+        check(unsafe { ResetEvent(self.event.0) })?;
+        let mut ov = OVERLAPPED {
+            hEvent: self.event.0,
+            ..Default::default()
+        };
+        let mut n = 0;
+        let ok = unsafe {
+            if write {
+                WriteFile(handle.0, buffer.as_ptr(), length, &mut n, &mut ov)
+            } else {
+                ReadFile(handle.0, buffer.as_mut_ptr(), length, &mut n, &mut ov)
+            }
+        };
+        if ok != 0 {
+            return Ok(n as usize);
         }
-    };
-    if ok != 0 {
-        return Ok(n as usize);
+        if unsafe { GetLastError() } != ERROR_IO_PENDING {
+            return Err(io::Error::last_os_error());
+        }
+        wait_io_with_cancellation(handle, &mut ov, stop, cancel, timeout).map(|n| n as usize)
     }
-    if unsafe { GetLastError() } != ERROR_IO_PENDING {
-        return Err(io::Error::last_os_error());
-    }
-    wait_io_with_cancellation(handle, &mut ov, stop, cancel, timeout).map(|n| n as usize)
 }
 pub fn wait_io(
     handle: &Handle,
@@ -185,12 +210,12 @@ pub fn ioctl(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use windows_sys::Win32::System::Pipes::*;
     static COUNTER: AtomicU32 = AtomicU32::new(0);
-    fn pair() -> (Handle, Handle) {
+    pub(crate) fn pair() -> (Handle, Handle) {
         let name = wide(&format!(
             r"\\.\pipe\SCX.VPad.Test.{}.{}",
             std::process::id(),
@@ -252,6 +277,57 @@ mod tests {
             32
         );
         assert_eq!(b, sent);
+    }
+    #[test]
+    fn reusable_transfer_event_survives_timeout_and_repeated_messages() {
+        let (server, client) = pair();
+        let mut receiver = Transfer::new().unwrap();
+        let mut sender = Transfer::new().unwrap();
+        let mut bytes = [0; 32];
+        assert_eq!(
+            receiver
+                .run(
+                    &server,
+                    &mut bytes,
+                    false,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    10
+                )
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        for value in 1..=128 {
+            let mut sent = [value; 32];
+            assert_eq!(
+                sender
+                    .run(
+                        &client,
+                        &mut sent,
+                        true,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        1000
+                    )
+                    .unwrap(),
+                32
+            );
+            assert_eq!(
+                receiver
+                    .run(
+                        &server,
+                        &mut bytes,
+                        false,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        1000
+                    )
+                    .unwrap(),
+                32
+            );
+            assert_eq!(bytes, sent);
+        }
     }
     #[test]
     fn stop_event_interrupts_pending_read() {

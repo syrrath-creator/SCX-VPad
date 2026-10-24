@@ -20,6 +20,9 @@ static const DEVPROPKEY ScxPlayerKey = {{0x19f81049,0x3679,0x40f2,{0x96,0x89,0x2
 
 typedef struct _SCX_XUSB {
     uint8_t Input[64];
+    /* Last accepted game-facing controls; no timestamp/sensor/sequence noise.
+     * Kept under the same device lock as Input, including watchdog releases. */
+    uint8_t Controls[SCX_VPAD_XUSB_CONTROLS_SIZE];
     uint8_t Feedback[32];
     uint32_t Packet;
     uint32_t LastSequence;
@@ -78,7 +81,7 @@ static void ScxXDeliverInput(SCX_XUSB *ctx)
 {
     ULONG remaining = 0;
     WDFREQUEST request;
-    uint8_t report[29];
+    uint8_t report[SCX_VPAD_XUSB_STATE_REPORT_SIZE];
     if (!ctx->Online) return;
     if (scx_vpad_xusb_state_report(ctx->Input, 64, ctx->Packet, 1,
                                   report, sizeof(report)) != 0) return;
@@ -121,6 +124,7 @@ void ScxXWatchdog(WDFTIMER timer)
     if (!ctx->Online || !ctx->WatchdogArmed) { ctx->WatchdogArmed = FALSE; return; }
     if (GetTickCount64() - ctx->LastSubmitMs >= 500ull) {
         ScxXNeutral(ctx->Input);
+        memset(ctx->Controls, 0, sizeof(ctx->Controls));
         ++ctx->Packet;
         ctx->WatchdogArmed = FALSE;
         ScxXDeliverInput(ctx);
@@ -132,22 +136,24 @@ void ScxXWatchdog(WDFTIMER timer)
 static NTSTATUS ScxXSubmit(SCX_XUSB *ctx, const uint8_t *input, size_t length)
 {
     uint32_t sequence;
-    uint8_t before[29], after[29];
-    const uint8_t neutralControls[12] = {0};
+    uint8_t after[SCX_VPAD_XUSB_STATE_REPORT_SIZE];
+    const uint8_t neutralControls[SCX_VPAD_XUSB_CONTROLS_SIZE] = {0};
     BOOLEAN neutral, changed;
-    if (scx_vpad_validate_input(input, length) != 0) return STATUS_INVALID_PARAMETER;
+    /* This encoder fully validates Input64 before reading its sequence or
+     * changing state. Do not decode the new packet twice or re-encode the
+     * previous packet merely to detect changed controls. */
+    if (scx_vpad_xusb_state_report(input, length, 0, 0, after, sizeof(after)) != 0)
+        return STATUS_INVALID_PARAMETER;
     memcpy(&sequence, input + SCX_VPAD_INPUT_SEQUENCE_OFFSET, sizeof(sequence));
     if (ctx->HasSequence && !scx_vpad_sequence_after(sequence, ctx->LastSequence))
         return STATUS_INVALID_PARAMETER;
-    if (scx_vpad_xusb_state_report(ctx->Input, 64, 0, 0, before, sizeof(before)) != 0 ||
-        scx_vpad_xusb_state_report(input, length, 0, 0, after, sizeof(after)) != 0)
-        return STATUS_INVALID_PARAMETER;
     /* Unsupported sensors/buttons must neither wake a watchdog nor manufacture
      * an XInput packet-number change while the represented controls are idle. */
-    neutral = memcmp(after + 11, neutralControls, sizeof(neutralControls)) == 0;
-    changed = memcmp(before, after, sizeof(before)) != 0;
+    neutral = memcmp(after + SCX_VPAD_XUSB_CONTROLS_OFFSET, neutralControls, sizeof(neutralControls)) == 0;
+    changed = memcmp(ctx->Controls, after + SCX_VPAD_XUSB_CONTROLS_OFFSET, sizeof(ctx->Controls)) != 0;
     if (changed) ++ctx->Packet;
     memcpy(ctx->Input, input, sizeof(ctx->Input));
+    memcpy(ctx->Controls, after + SCX_VPAD_XUSB_CONTROLS_OFFSET, sizeof(ctx->Controls));
     ctx->LastSequence = sequence;
     ctx->HasSequence = TRUE;
     ctx->LastSubmitMs = GetTickCount64();
@@ -217,7 +223,7 @@ void ScxXControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength,
          * and 3 after the first input-resumed completion on Windows 26200.
          * Also retain the empty and version/index diagnostic request forms.
          * No producer data is accepted through this public interface. */
-        if (file == NULL || outLength < 29) { status = STATUS_INVALID_BUFFER_SIZE; break; }
+        if (file == NULL || outLength < SCX_VPAD_XUSB_STATE_REPORT_SIZE) { status = STATUS_INVALID_BUFFER_SIZE; break; }
         if (actual != 0 && ((actual != 3 && actual != 4) || input[0] < 1 || input[0] > 4 || input[1] != 1 || input[2] != 0 || (actual == 4 && (input[3] & ~3u) != 0))) {
             status = STATUS_INVALID_PARAMETER; break;
         }
@@ -257,6 +263,9 @@ void ScxXControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength,
         status = actual == 0 ? ScxXCopy(request, ctx->Feedback, 32) : STATUS_INVALID_PARAMETER;
         break;
     case SCX_X_WAIT_FEEDBACK:
+        /* Invalid buffers must not occupy one of the bounded wait slots until
+         * a game eventually sends rumble. Valid pending requests are unchanged. */
+        if (outLength < sizeof(ctx->Feedback)) { status = STATUS_BUFFER_TOO_SMALL; break; }
         if (actual == 4) {
             uint32_t seen, current;
             ULONG waiting;
@@ -328,6 +337,7 @@ NTSTATUS ScxXboxDeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT init)
     if (!NT_SUCCESS(status)) return status;
     ctx = ScxXContext(device);
     ScxXNeutral(ctx->Input);
+    memset(ctx->Controls, 0, sizeof(ctx->Controls));
     status = ScxStatus(scx_vpad_feedback_init(SCX_PROFILE_XBOX360, ctx->Feedback, sizeof(ctx->Feedback)));
     if (!NT_SUCCESS(status)) return status;
     WDF_DEVICE_PROPERTY_DATA_INIT(&property, &ScxPlayerKey);

@@ -1,229 +1,171 @@
 # SCX VPad
 
-An independently implemented Windows virtual-controller driver with a Rust core,
-a small UMDF2 binding, and a restricted Rust service for device management.
+**v0.1.0 · native revision 0.1.0.35 · Windows 11 x64**
 
-**Preview 4 — native driver 0.1.0.33; known multi-controller limitation.** This
-is an experimental preview, not a stable or production-certified release.
-GameInput 4.0.302 can miss virtual controllers when a game or other consumer
-starts after several SCX devices already exist: a four-Sony test sees only two.
-Mixed profiles and generic devices are also affected. HID/DirectInput and WGI
-checks do not make this GameInput case pass. Do not rely on this preview for
-multi-controller GameInput use; the issue is unresolved. Details and the exact
-scope of testing are in [VALIDATION.md](VALIDATION.md).
+Virtual Xbox 360, DualShock 4, DualSense and generic HID controllers for SCX.
+The driver core, source-authorization policy, client SDK and device-management
+service are written in Rust. Small C bindings integrate with Windows UMDF2;
+the optional graphical Setup shell uses C#/.NET Framework.
 
-The source adds
-input-only HID wheel, flight-stick and arcade-stick profiles, each with 32
-buttons, a hat and six axes. Their fixed descriptors, encoding and queue logic
-are implemented in Rust; the thin WDF binding remains C. These profiles require
-the matching .33 service/driver and do not implement force feedback or arbitrary
-physical-device drivers. See [SDK](SDK.md) for control meanings and
-[validation](VALIDATION.md) for the distinction between build and installed tests.
-An earlier .33 diagnostic build passed installed generic-class, native HID,
-Sony/Xbox input and feedback, and effective-access checks. The final Preview 4
-payload contains subsequent Rust and installer audit changes and has build and
-isolated-test coverage; it has not completed a fresh installed regression run.
-The GameInput omission also reproduces with installed .32. Shared-container
-and topology experiments are excluded from this package; individual device
-identities are retained. There is no timing workaround or reduced device-count
-assertion presented as a fix.
+The stable channel covers the documented, tested feature set below. It is not
+Microsoft WHQL certification, a promise of every game/device, or a replacement
+for the compatibility limits in [VALIDATION.md](VALIDATION.md).
 
-**Native driver 0.1.0.32 — Sony device identity update.** Independently implemented architecture, with
-attributed MIT Sony compatibility tables from HIDMaestro. This is an experimental
-driver and SDK, not a production-certified
-drop-in replacement. Its Windows validation and remaining compatibility gaps
-are recorded separately from protocol unit tests.
+## What is included
 
-Revision .32 assigns each Sony controller its own stable Windows container,
-using the installation seed, profile and service slot. The controlled Tekken 8
-comparison accepts input with this policy; the subsequent physical Edge route
-also received positive user reports for Tekken and Gears. It retains the
-version-1 data channel used by SCX 2.1.2 and the tested Rust queue/feedback core.
-See RELEASE-NOTES.md and VALIDATION.md for test scope and package status.
+| Output | Controls and feedback |
+| --- | --- |
+| Xbox 360 compatible | XInput buttons, sticks, triggers and basic game rumble |
+| DualShock 4 / DualSense | USB-style HID input, motion, two touch contacts, basic rumble and supported LED feedback |
+| Generic gamepad | 32 buttons, one hat, four signed axes and two unsigned trigger axes |
+| Wheel / flight stick / arcade stick | Input-only HID profiles with 32 buttons, one hat and six fixed axes; class-specific axis usages |
 
-## Architecture
+SCX supports up to four virtual controllers per client process. The service has
+a global limit of 16 devices and a separate global limit of four Xbox outputs,
+matching XInput's slot limit. Controllers retain independent input, feedback,
+ownership and stable Windows identities, including in mixed-profile use.
 
-The administrator installs the driver and service once. The installer creates a
-nonexportable machine-local signing key and trusts its public certificate locally.
-It does not enable test signing or turn off Secure Boot or Memory Integrity.
-Normal applications communicate with the service without elevation. The service
-retains privileges only to create and remove the allowlisted SCX devices.
+Generic outputs do not implement force feedback or rumble. Sony compatibility
+does not include adaptive-trigger programs, USB audio, Bluetooth radio
+emulation, console pairing or Steam-controller output. Physical-device discovery
+and remapping belong in SCX; the virtual driver does not add hardware support
+for an arbitrary legacy adapter or vendor protocol.
 
-Controller state travels directly from the native client to the UMDF2 driver,
-using an authenticated per-device shared section for Sony, a vendor HID
-collection for generic HID, or the restricted Xbox control interface. The
-privileged service's pipe manages device lifetime, not each input packet. There is no
-network transport or fixed input polling timer. State encoding uses fixed-size
-buffers. Devices have separate queues and synchronization, bounded capacity,
-explicit backpressure and stale-input neutralization.
+## Four controllers and the GameInput workaround
 
-## Current implementation
+GameInput 4.0.302 can miss devices when a consumer starts after several virtual
+controllers already exist. SCX VPad supplies an explicit reconnect operation;
+the matching SCX app exposes **Controller neu anmelden / Re-register controllers**.
+Use it while the game is running if a controller is missing. Release buttons
+and sticks during the short reconnection.
 
-- Generic HID gamepad: 32 buttons, hat, four signed stick axes and two unsigned
-  trigger axes. This profile was exercised through real Windows HID readers.
-- Native .33 preview: input-only wheel, flight-stick and arcade-stick classes
-  with the same bounded controls and class-specific HID axis usages. No force
-  feedback or guarantee of automatic game-specific controller classification.
-- Experimental Xbox/XInput-compatible UMDF function device, with an original
-  XUSB request dispatcher. This is separate from the generic HID profile.
-- Experimental DualShock 4 and DualSense USB-style HID protocols: buttons,
-  axes, triggers, motion, two touch contacts, basic rumble and LED feedback.
-- Up to 16 virtual devices across clients, with a per-process quota of four.
-  Xbox devices have an additional global quota of four; XInput has four slots.
-- Strict versioned little-endian input packets, bounds and reserved-byte checks.
-- Direct native input submission, independent HID transition queues and
-  separate Xbox state. Event-driven feedback has bounded, cancellable waits.
-- Owner SID, session and integrity checks; local-only management pipe;
-  authenticated HID input capabilities; restricted Xbox control interface;
-  server-process verification, quotas and removal on lease disconnection.
-- Stale non-neutral input resets after the watchdog interval; producers must
-  refresh held state at least every 250 ms.
-- Windows service, Rust client library and a command-line test client.
-- Stable device identities, locally signed installation and scoped removal.
+This is a tested workaround for the upstream discovery issue, not a claim to
+have patched Windows. It recreates the owned device handles while retaining
+profiles, stable IDs and separate Windows containers. It does not silently
+restart Windows services, merge controllers into the PC container, reduce the
+controller count or poll/reconnect continuously. See the installed-test record
+for early/late consumer and mixed-controller coverage.
 
-Generic HID does not expose Sony or Steam features. Sony profiles have synthetic
-SCX calibration and per-device identities, plus attributed Sony USB compatibility
-descriptors and firmware-information tables from HIDMaestro (see notices).
-Native USB audio, adaptive trigger effects, Bluetooth radio emulation, console
-pairing and Steam-controller output are not implemented. The generic profile has
-no rumble protocol. Revision 0.1.0.32 retains the Windows Gaming Input and
-GameInput compatibility corrections, Sony initialization and mixed-output
-handling. Sony devices now use distinct stable containers instead of the
-historical shared system-container workaround. Device identities remain stable
-for the same installation, profile and service slot; the graphical updater
-preserves the installation seed and authorized Windows account.
-The controlled Tekken 8 test accepts the virtual DualSense input; the subsequent
-physical Edge route also received a positive Gears of War: E-Day input report.
-Earlier Gears game-rumble evidence is retained separately in VALIDATION.md.
-Earlier .32 tests recorded four-controller identity passes, independent
-HID/WGI input, feedback isolation and partial removal. Those historical passes
-do not establish reliable late-start GameInput discovery: the current stricter
-check still fails as described above. See VALIDATION.md for the chronology and
-scope of each result.
-Do not assume universal game support from a protocol or enumeration test.
+## Source Guard: prevent physical + virtual duplicate input
 
-## Build
+SCX Source Guard is an original, device-specific UMDF2 upper filter. Its first
+qualified source is **DualSense Edge over Bluetooth**. During an authorized SCX
+connection it reserves that physical gamepad's input/output for authenticated
+SCX handles, so games consume the virtual output instead of both devices.
+The matching SCX app reports when protection is active.
 
-Initial target: **Windows 11 x64, build 22000 or newer**. ARM64 and Windows 10 are
-not currently packaged or validated.
+No HidHide dependency or new SCX kernel-mode binary is installed. The filter
+uses Windows' existing UMDF infrastructure. It is not a HID class-wide filter,
+a keyboard/mouse filter or a claim to hide every controller. The physical
+controller may remain visible in device enumeration; access is restricted only
+while its lease is active. Other sources retain their normal behavior.
 
-Install Rust stable for MSVC (including `rustfmt`, `clippy` and `rust-docs`),
-Visual Studio C++ build tools, Windows SDK
-10.0.26100.0 and the Windows Driver Kit. The build can also use the official
-`Microsoft.Windows.WDK.x64` NuGet package (10.0.26100.6584) extracted locally;
-set `SCX_WDK_ROOT` to its `c` directory. Microsoft tools are build dependencies
-and are not redistributed in the driver package.
+A short per-device lease and random per-handle capabilities authorize access.
+Disconnect, client exit or lease expiry restores ordinary access. Controller
+reports travel directly to/from the native client; the service is not a
+per-input-packet intermediary. Initial installation/update is administrative;
+normal connections, disconnections and explicit reconnection do not elevate.
 
-```powershell
-cargo fetch --locked
-./scripts/fetch-wdk.ps1
-./scripts/cargo.ps1 -CargoArgs @('test','--workspace','--locked','--offline')
-./scripts/build-package.ps1
-```
+## Install
 
-The package builder runs tests, creates native release binaries, verifies the
-INF using Microsoft's InfVerif, generates a catalogue using Inf2Cat and writes
-a file-hash manifest. It does not install anything or modify Windows trust.
+Download **[SCX-VPad-0.1.0.35-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.0/SCX-VPad-0.1.0.35-Setup-x64.exe)**
+from [the release](https://github.com/syrrath-creator/SCX-VPad/releases/tag/v0.1.0).
+Compare its checksum with `SHA256SUMS.txt`.
 
-## Install and exercise a development build
+1. Close SCX and games. Run Setup from the Windows account that will use SCX.
+2. Read the license/local certificate notice, consent, and select Install.
+3. Approve Windows' administrator prompt once. Wait for success; restart Windows
+   first if requested, then open SCX and connect using SCX VPad.
 
-### Recommended: Windows Setup EXE
+Setup works offline and embeds exactly the matching hash-verified driver ZIP.
+Reinstall/update preserves the authorized Windows account and device identity
+seed. It does not modify SCX profiles. To remove the driver and service, run the
+same Setup and choose Uninstall. Setup is not separately registered in Windows
+Installed apps. Copy the displayed log before uninstalling a failed installation.
 
-Download **[SCX-VPad-0.1.0.33-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.0-preview.4/SCX-VPad-0.1.0.33-Setup-x64.exe)**
-from the Preview 4 release, after reviewing its known GameInput limitation.
-Its separate `SHA256SUMS.txt` asset
-contains the EXE checksum. No ZIP extraction or terminal commands are needed.
+The Setup EXE is **not publicly publisher-signed**; Windows may show an unknown
+publisher. Installation creates a nonexportable machine-local signing key and
+trusts its public certificate locally. No private key is shipped. Local signing
+does not provide public Authenticode trust or WHQL certification. Setup does
+not disable Secure Boot, Memory Integrity or driver-signature enforcement and
+does not enable test-signing mode. The installer is separate from the SCX Store app.
 
-1. Close SCX and games. Start the EXE by double-clicking it from the Windows
-   account that will use SCX.
-2. Read the license and local driver/certificate notice, confirm consent and
-   select **Install**. Approve the Windows administrator prompt.
-3. Wait for the success message, then open SCX, select **SCX VPad** and connect.
-   Restart Windows first if the installer requests it.
-
-The EXE installs the driver **and** its service using the hash-verified Preview 4
-package. It includes German and English interfaces and works offline.
-If already installed, **Reinstall** replaces this revision and retains the
-authorized Windows account and stable device identity seed. Driver updates still require administrator approval;
-ordinary controller connections do not. SCX application profiles are not changed.
-
-For removal, run the EXE again and choose **Uninstall**. Setup is not registered
-as a separate entry in Windows Installed apps. **Copy log** copies diagnostics;
-failed operations retain a protected setup log at the location shown in the UI.
-
-The Setup EXE has no public publisher signature, so Windows may display an
-unknown-publisher warning. Its local driver certificate does not give the EXE a
-globally trusted signature. This remains a development preview, not WHQL-certified.
-Neither the EXE nor its driver is included in the SCX Store package.
-
-### Advanced: manual ZIP installation
-
-Download the Windows x64 ZIP from [Releases](https://github.com/syrrath-creator/SCX-VPad/releases)
-and compare its SHA256 with the accompanying checksum file. For a downloaded
-ZIP, review its source and use Windows **Properties → Unblock** before extracting
-if Windows marks the unsigned development scripts as downloaded. Do not weaken
-machine-wide execution policy. Open 64-bit Windows PowerShell in the extracted
-package and run:
+Advanced ZIP installation: extract the matching Windows x64 ZIP, verify its
+checksum, and run the packaged installer as the intended interactive user:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\installer\Install.ps1
 ```
 
-Run this as the intended interactive user. The script requests administrative
-elevation once and carries
-that user's SID into the service configuration. Initial setup authorizes one
-local/domain/MS-account Windows user; changing that owner is administrative.
-It installs only SCX VPad under
-`Program Files\SCX VPad`, records its own driver package and certificate, and
-does not change existing controller-driver installations.
+If Windows marks a downloaded ZIP, review its source and use Properties →
+Unblock before extracting. Do not weaken machine-wide execution policy. The
+script requests UAC itself. Setup installs only its allowlisted driver packages
+and restricted service under `Program Files\SCX VPad`, recording ownership for
+scoped removal and recovery of partial imports.
 
-Sony Gamepad and UINavigation mappings are installed for USB IDs 054C:09CC and
-054C:0CE6. Windows scopes these mappings to VID/PID/usage, so they also affect
-matching physical USB controllers. Their layout follows native Sony axes/buttons;
-DualSense Edge and Bluetooth identities are not modified. Previous values are
-journaled in the protected installation record. Uninstall restores prior values
-only while they still match SCX's installed values, preserving later external edits.
+Sony Gamepad/UINavigation mappings use USB IDs 054C:09CC and 054C:0CE6. Windows
+scopes them by VID/PID/usage, so matching physical USB Sony controllers also see
+these native-layout mappings. Previous registry values are journaled and are
+restored on uninstall only if they still match SCX's installed values. This is
+separate from the Edge Bluetooth Source Guard filter.
 
-The signing key is local, nonexportable and restricted to administrators and
-SYSTEM. Installation failures are recorded under `Program Files\SCX VPad\logs`.
-Copy a failure log before uninstalling; removal deletes that installation folder.
-Alternatively, use the packaged `installer/Uninstall.ps1` for removal. Driver/service upgrades
-remain administrative operations; ordinary controller connections do not.
-The installed removal script is also retained under
-`C:\Program Files\SCX VPad\installer\Uninstall.ps1`.
+## Architecture and security
 
-```powershell
-./bin/scx-vpadctl.exe status
-./bin/scx-vpadctl.exe --help
-./bin/scx-vpadctl.exe self-test
-./bin/scx-vpadctl.exe benchmark-hid 20000
-```
+The Rust service authorizes one configured Windows user, authenticates local
+management clients and grants bounded per-device leases. It accepts no client
+commands, executable paths, arbitrary HID descriptors or network requests.
+The account is the security boundary, not mutually hostile programs running as
+that same account. See [SECURITY.md](SECURITY.md).
 
-Consult the CLI help for bounded demo and benchmark commands. A submission-time
-benchmark measures the API path; it is not physical controller-to-screen latency.
-Measured submission-to-HID-read completion also excludes physical transport,
-game polling and display delay. This project makes no "fastest driver" claim.
-See [SDK.md](SDK.md) and the Rust client example for application integration.
-SCX 2.1.2 recommends this backend. Installation does not modify application
-profiles. Update the driver, service and client together; old Sony clients from
-before native .24 are incompatible with the current private producer channel.
-Recorded results and remaining test coverage are in [VALIDATION.md](VALIDATION.md).
+Input uses a private authenticated shared section for Sony, an authenticated
+vendor HID collection for generic profiles, or the restricted Xbox interface.
+Fixed-size packets, independent queues, backpressure, strict sequence and bounds
+checks, short leases and stale-input neutralization keep work bounded. Refresh
+held non-neutral state at least every 250 ms. Ordinary submit calls do not route
+through the privileged service, allocate variable-sized state or sleep on a
+fixed polling timer.
 
-### Build the Setup EXE
+There is no claim of universal anti-cheat compatibility or the fastest physical
+controller-to-screen latency. API submission benchmarks exclude physical
+transport, game polling and display delay. Performance results must state what
+was measured and which exact binaries were used.
 
-The small WinForms shell uses the .NET Framework included with Windows 11. It
-wraps the Rust driver/service package; it does not rebuild or change them.
-Build from an already validated package and supply its independently verified hash:
+## Build
+
+Target: Windows 11 x64, build 22000 or newer. Windows 10 and ARM64 are not
+packaged or validated. Install Rust stable MSVC (rustfmt, clippy, rust-docs),
+Visual Studio C++ tools, Windows SDK 10.0.26100.0 and the WDK. The official
+Microsoft.Windows.WDK.x64 NuGet package 10.0.26100.6584 is supported; set
+`SCX_WDK_ROOT` to its extracted `c` directory. Microsoft build tools are not
+redistributed in the package.
 
 ```powershell
-./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.33-preview.4-windows-x64.zip -ExpectedSha256 $verifiedReleaseSha256 -OutputDirectory ./artifacts/setup
-./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.33-preview.4-windows-x64.zip -BuildDirectory ./artifacts/setup
+cargo fetch --locked
+./scripts/fetch-wdk.ps1
+./scripts/cargo.ps1 -CargoArgs @('test','--workspace','--locked','--offline')
+./scripts/build-package.ps1 -IncludeSourceGuard -ReleaseChannel stable -Destination ./dist/SCX-VPad-0.1.0.35-windows-x64
 ```
 
-The Setup and ZIP in Preview 4 contain the same hash-verified native revision .33.
-Earlier preview releases remain available as historical downloads.
+The stable package requires Source Guard and cannot skip tests. The build checks
+Rust code, installer recovery, replacement identities and package validation;
+it separately builds the no_std Rust driver core and Source Guard policy,
+compiles both UMDF2 bindings, runs InfVerif and Inf2Cat, verifies matching native
+versions and produces a file-hash manifest. Building changes no Windows trust,
+drivers or services. Installed tests remain a separate release qualification.
 
-## License and commercial distribution
+ZIP the package contents with `package-manifest.json` at archive root, then:
+
+```powershell
+./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.35-windows-x64.zip -ExpectedSha256 $verifiedZipSha256 -OutputDirectory ./artifacts/setup35
+./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.35-windows-x64.zip -BuildDirectory ./artifacts/setup35
+```
+
+The Setup tests exercise the real package reader against modified archives;
+they do not install drivers, change certificates or access the live registry.
+[SDK.md](SDK.md) documents client integration and direct control semantics.
+[VALIDATION.md](VALIDATION.md) separates current evidence from historical tests.
+
+## License and provenance
 
 Copyright 2026 **Tim Haller**. Source is available under the [SCX Source Available
 Noncommercial Distribution License](LICENSE). Use and modification are allowed,
@@ -231,10 +173,8 @@ including internal organizational use. **Commercial distribution, paid bundling
 and commercial hosted access require Tim Haller's prior written permission.**
 Contact **tim.haller@gmail.com**.
 
-This commercial-distribution restriction means the project is source available,
-not OSI-approved open source. Third-party components keep their own licenses.
-The architecture is independently implemented; no HIDMaestro driver or SDK
-is bundled. Attributed MIT Sony compatibility tables are included. See [security boundaries](SECURITY.md),
-[protocol provenance](crates/scx-vpad-core/PROVENANCE.md),
+The commercial-distribution restriction means source available, not OSI-approved
+open source. Third-party components retain their licenses. This is an independent
+implementation, not a HIDMaestro driver/SDK bundle. Attributed MIT Sony USB
+compatibility tables are included. See [provenance](crates/scx-vpad-core/PROVENANCE.md),
 [XUSB contract](crates/scx-vpad-core/XUSB-CONTRACT.md) and third-party notices.
-

@@ -69,7 +69,7 @@ internal static class Program {
 }
 
 internal sealed class PackageFile { public string path { get; set; } public long bytes { get; set; } public string sha256 { get; set; } }
-internal sealed class PackageManifest { public string product { get; set; } public string driverVersion { get; set; } public PackageFile[] files { get; set; } }
+internal sealed class PackageManifest { public string product { get; set; } public string version { get; set; } public string driverVersion { get; set; } public string platform { get; set; } public int minimumBuild { get; set; } public string releaseChannel { get; set; } public PackageFile[] files { get; set; } }
 internal static class Payload {
     internal static byte[] Resource(string name) {
         using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(name)) {
@@ -89,32 +89,48 @@ internal static class Payload {
         return result;
     }
     internal static Dictionary<string, byte[]> ReadVerified() {
-        byte[] zipped = Resource("SCX.Payload.zip");
-        if (Hash(zipped) != BuildInfo.PayloadSha256) throw new InvalidDataException("Embedded package checksum mismatch.");
+        return ReadVerified(Resource("SCX.Payload.zip"), BuildInfo.PayloadSha256, BuildInfo.DriverVersion, BuildInfo.SourceGuard, BuildInfo.Stable);
+    }
+    internal static Dictionary<string, byte[]> ReadVerified(byte[] zipped, string expectedHash, string expectedVersion, bool sourceGuard, bool stable) {
+        if (Hash(zipped) != expectedHash) throw new InvalidDataException("Embedded package checksum mismatch.");
         var files = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         long total = 0;
         using (var ms = new MemoryStream(zipped)) using (var zip = new ZipArchive(ms, ZipArchiveMode.Read)) {
+            if (zip.Entries.Count > 512) throw new InvalidDataException("Too many package entries.");
             foreach (var entry in zip.Entries) {
                 string rel = entry.FullName.Replace('\\', '/');
                 if (rel.EndsWith("/")) { SafePath(@"C:\SCX-Payload-Check", rel.TrimEnd('/')); continue; }
                 SafePath(@"C:\SCX-Payload-Check", rel);
                 if (files.ContainsKey(rel) || entry.Length > 32 * 1024 * 1024 || (total += entry.Length) > 64 * 1024 * 1024) throw new InvalidDataException("Invalid package size or duplicate member.");
-                using (var source = entry.Open()) using (var buffer = new MemoryStream()) { source.CopyTo(buffer); files.Add(rel, buffer.ToArray()); }
+                using (var source = entry.Open()) using (var buffer = new MemoryStream()) {
+                    byte[] chunk = new byte[8192]; int count;
+                    while ((count = source.Read(chunk, 0, chunk.Length)) != 0) {
+                        if (buffer.Length + count > entry.Length) throw new InvalidDataException("Package member exceeds declared length.");
+                        buffer.Write(chunk, 0, count);
+                    }
+                    if (buffer.Length != entry.Length) throw new InvalidDataException("Incomplete package member.");
+                    files.Add(rel, buffer.ToArray());
+                }
             }
         }
         byte[] manifestBytes;
         if (!files.TryGetValue("package-manifest.json", out manifestBytes)) throw new InvalidDataException("Missing manifest.");
         var manifest = new JavaScriptSerializer().Deserialize<PackageManifest>(Encoding.UTF8.GetString(manifestBytes).TrimStart('\uFEFF'));
-        if (manifest.product != "SCX-VPad" || manifest.driverVersion != BuildInfo.DriverVersion || manifest.files == null) throw new InvalidDataException("Unexpected package identity.");
+        if (manifest == null || manifest.product != "SCX-VPad" || manifest.driverVersion != expectedVersion || manifest.version == null || !Regex.IsMatch(manifest.version, @"\A\d+\.\d+\.\d+\z") || manifest.platform != "windows-x64" || manifest.minimumBuild != 22000 || manifest.files == null || manifest.files.Length > 256) throw new InvalidDataException("Unexpected package identity.");
+        string channel = manifest.releaseChannel ?? "preview";
+        if ((channel != "preview" && channel != "stable") || (channel == "stable") != stable || (stable && !sourceGuard)) throw new InvalidDataException("Unexpected release channel.");
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var member in manifest.files) {
+            if (member == null) throw new InvalidDataException("Null package member.");
             SafePath(@"C:\SCX-Payload-Check", member.path);
             string rel = member.path.Replace('\\', '/'); byte[] bytes;
             if (!seen.Add(rel) || !files.TryGetValue(rel, out bytes) || bytes.LongLength != member.bytes || !String.Equals(Hash(bytes), member.sha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Package member verification failed: " + member.path);
         }
         if (files.Count != seen.Count + 1) throw new InvalidDataException("Unlisted files in package.");
-        foreach (var required in new[] { "installer/Install.ps1", "installer/Uninstall.ps1", "installer/GameInput.ps1", "installer/Service.ps1", "driver/ScxVPad.dll", "bin/scx-vpad-service.exe", "LICENSE" })
+        foreach (var required in new[] { "installer/Install.ps1", "installer/Uninstall.ps1", "installer/GameInput.ps1", "installer/Service.ps1", "installer/Package.ps1", "driver/ScxVPad.dll", "driver/scxvpad.inf", "driver/scxxusb.inf", "driver/scxvpad.cat", "bin/scx-vpad-service.exe", "bin/scx-vpadctl.exe", "bin/xinput_probe.exe", "LICENSE", "THIRD-PARTY-NOTICES.txt" })
             if (!seen.Contains(required)) throw new InvalidDataException("Incomplete package: " + required);
+        foreach (var sourceMember in new[] { "driver/ScxSource.dll", "driver/scxsource.inf", "driver/scxsource.cat" })
+            if (seen.Contains(sourceMember) != sourceGuard) throw new InvalidDataException("Source Guard package identity mismatch.");
         return files;
     }
     internal static void AssertPlainTree(string path) {
@@ -177,8 +193,10 @@ internal sealed class SetupForm : Form {
         layout.Controls.Add(new Label { Text = "SCX VPad", AutoSize = true, Font = new Font("Segoe UI", 27, FontStyle.Bold), ForeColor = accent, Dock = DockStyle.Top }, 0, 0);
         layout.Controls.Add(new Label { Text = Program.Text("Treiber & Dienst · ", "Driver & service · ") + BuildInfo.DriverVersion + " · Windows 11 x64", UseMnemonic = false, AutoSize = true, Dock = DockStyle.Top, Margin = new Padding(3, 3, 3, 14) }, 0, 1);
         layout.Controls.Add(new Label { Dock = DockStyle.Top, AutoSize = true, Margin = new Padding(3, 0, 3, 14), Text = Program.Text(
-            "Virtuelle Xbox 360-, DualShock 4-, DualSense- und generische HID-Geräte für SCX.\r\nDie Einrichtung benötigt einmalig Administratorrechte und erstellt ein lokales Signaturzertifikat. Normale Controller-Verbindungen brauchen keine Adminrechte.\r\nEntwicklungsvorschau, nicht WHQL-zertifiziert. Secure Boot und Speicherintegrität bleiben unverändert.\r\nBekannter Fehler: GameInput 4.0.302 erkennt beim späteren Spielstart mit mehreren virtuellen Controllern möglicherweise nur einen Teil. Details stehen in den Release Notes.",
-            "Virtual Xbox 360, DualShock 4, DualSense and generic HID devices for SCX.\r\nSetup needs administrator approval once and creates a local signing certificate. Normal controller connections need no administrator rights.\r\nDevelopment preview, not WHQL certified. Secure Boot and Memory Integrity stay unchanged.\r\nKnown issue: when a game starts after several virtual controllers already exist, GameInput 4.0.302 may detect only some of them. See the release notes.") }, 0, 2);
+            "Virtuelle Xbox 360-, DualShock 4-, DualSense- und generische HID-Geräte für SCX.\r\nDie Einrichtung benötigt einmalig Administratorrechte und erstellt ein lokales Signaturzertifikat. Normale Controller-Verbindungen brauchen keine Adminrechte.\r\nNicht WHQL-zertifiziert. Secure Boot und Speicherintegrität bleiben unverändert.\r\nWenn ein laufendes Spiel nicht alle virtuellen Controller erkennt, in der passenden SCX-Version „Controller neu anmelden“ verwenden. Dieser explizite Workaround erhält die getrennten Geräteidentitäten; Details stehen in den Release Notes.",
+            "Virtual Xbox 360, DualShock 4, DualSense and generic HID devices for SCX.\r\nSetup needs administrator approval once and creates a local signing certificate. Normal controller connections need no administrator rights.\r\nNot WHQL certified. Secure Boot and Memory Integrity stay unchanged.\r\nIf a running game does not see every virtual controller, use Re-register controllers in the matching SCX app. This explicit workaround preserves separate device identities; see the release notes.") + Program.Text(BuildInfo.Stable ? "\r\nStabile Ausgabe für den dokumentierten und geprüften Funktionsumfang." : "\r\nEntwicklungsvorschau.", BuildInfo.Stable ? "\r\nStable release for the documented and tested scope." : "\r\nDevelopment preview.") + (BuildInfo.SourceGuard ? Program.Text(
+            "\r\nEnthält SCX Source Guard für DualSense Edge per Bluetooth. Der eigene Gerätefilter reserviert dessen physische Eingaben während einer SCX-Verbindung, um Doppeleingaben zu verhindern. Beim Trennen oder Verbindungsabbruch wird der Zugriff wieder freigegeben.",
+            "\r\nIncludes SCX Source Guard for DualSense Edge over Bluetooth. Our device filter reserves its physical input during an SCX connection to prevent duplicate input. Disconnecting or losing the connection restores access.") : "") }, 0, 2);
         status.Dock = DockStyle.Top; status.AutoSize = true; status.Margin = new Padding(3, 0, 3, 12); status.ForeColor = Color.FromArgb(119, 218, 197); layout.Controls.Add(status, 0, 3);
         consent.Text = Program.Text("Ich stimme der lokalen Treiber-/Zertifikateinrichtung und der Lizenz zu. SCX und Spiele sind geschlossen.", "I agree to local driver/certificate setup and the license. SCX and games are closed.");
         consent.Dock = DockStyle.Top; consent.AutoSize = true; consent.Margin = new Padding(3, 0, 3, 12); consent.CheckedChanged += delegate { RefreshButtons(); }; layout.Controls.Add(consent, 0, 4);
@@ -290,7 +308,7 @@ internal sealed class SetupForm : Form {
                         }
                     }
                 }
-                Append("Verifying embedded development-preview package (SHA-256) …");
+                Append("Verifying embedded " + (BuildInfo.Stable ? "stable" : "preview") + " package (SHA-256) …");
                 var files = Payload.ReadVerified();
                 string stage = Payload.Stage(files);
                 Append("Protected setup files: " + stage);

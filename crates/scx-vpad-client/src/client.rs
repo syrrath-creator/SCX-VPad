@@ -24,6 +24,10 @@ const XUSB_INFO: u32 = 0x226004;
 const XUSB_FEEDBACK_WAIT: u32 = 0x226008;
 const XUSB_FEEDBACK_GET: u32 = 0x22600c;
 
+#[cfg(test)]
+#[path = "reconnect_windows_tests.rs"]
+mod reconnect_windows_tests;
+
 /// Holds one service lease and one direct HID channel. Dropping it removes only
 /// this controller. A crash closes the pipe, which also releases the device.
 pub struct VirtualPad {
@@ -55,6 +59,9 @@ impl VirtualPad {
                 lease: 0,
             },
         )?;
+        Self::from_response(pipe, profile, response)
+    }
+    fn from_response(pipe: Handle, profile: Profile, response: Response) -> io::Result<Self> {
         if response.lease == 0 || !valid_device_instance(&response.instance, profile) {
             return Err(fail("invalid device lease"));
         }
@@ -132,6 +139,61 @@ impl VirtualPad {
     }
     pub fn instance_id(&self) -> &str {
         &self.instance
+    }
+    /// Explicit compatibility recovery for a consumer that missed initial PnP
+    /// arrivals. Disconnects/reconnects only this output; preserves its reserved
+    /// slot and instance ID. Stop all feedback readers before invoking this.
+    pub fn reconnect(&mut self) -> io::Result<()> {
+        if !Self::reconnect_supported()? {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "SCX VPad service update required for controlled reconnection",
+            ));
+        }
+        self.neutral()?;
+        let mut duplicate = ptr::null_mut();
+        unsafe {
+            use windows_sys::Win32::System::Threading::GetCurrentProcess;
+            check(DuplicateHandle(
+                GetCurrentProcess(),
+                self.pipe.0,
+                GetCurrentProcess(),
+                &mut duplicate,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            ))?;
+        }
+        let duplicate = Handle::new(duplicate)?;
+        let response = exchange(
+            &self.pipe,
+            Request {
+                op: OP_RECONNECT,
+                profile: 0,
+                lease: self.lease,
+            },
+        )?;
+        if response.lease != self.lease || response.instance != self.instance {
+            return Err(fail("reconnection changed the reserved device identity"));
+        }
+        let replacement = Self::from_response(duplicate, self.profile, response)?;
+        // The replacement owns the same pipe/lease. Closing the superseded
+        // handles must not release it. Secrets and old channels are still wiped.
+        self.lease = 0;
+        *self = replacement;
+        Ok(())
+    }
+    pub fn reconnect_supported() -> io::Result<bool> {
+        let pipe = connect()?;
+        let response = exchange(
+            &pipe,
+            Request {
+                op: OP_STATUS,
+                profile: 0,
+                lease: 0,
+            },
+        )?;
+        Ok(response.instance == RECONNECT_CAPABILITY)
     }
     /// Legacy bring-up counters for older driver revisions. Revision .29 no
     /// longer collects these: XUSB/HID queries fail and Sony reserved words
@@ -462,6 +524,9 @@ impl VirtualPad {
 }
 impl Drop for VirtualPad {
     fn drop(&mut self) {
+        if self.lease == 0 {
+            return;
+        }
         // Closing the lease is sufficient and cannot deadlock behind a failed
         // service response. Explicit release is best effort and bounded.
         let mut request = Request {
@@ -486,7 +551,7 @@ pub fn service_status() -> io::Result<()> {
     )?;
     Ok(())
 }
-fn exchange(pipe: &Handle, request: Request) -> io::Result<Response> {
+pub(crate) fn exchange(pipe: &Handle, request: Request) -> io::Result<Response> {
     let mut bytes = request.encode();
     if transfer(pipe, &mut bytes, true, ptr::null_mut(), 5000)? != bytes.len() {
         return Err(fail("short service write"));
@@ -556,7 +621,7 @@ fn submit_authenticated(
     wipe(&mut report[1..33]);
     result
 }
-fn connect() -> io::Result<Handle> {
+pub(crate) fn connect() -> io::Result<Handle> {
     start_service()?;
     let name = wide(PIPE_NAME);
     // Identification-level impersonation lets the service authenticate callers

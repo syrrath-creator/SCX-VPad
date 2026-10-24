@@ -1,7 +1,10 @@
 /target/
+/isolation/build/
+/isolation/policy/target/
 /.tooling/
 /dist/
 /validation/local/
+/validation/stable35/
 # Generated from the installed Rust toolchain and bundled in binary releases.
 /licenses/rust-COPYRIGHT-library.html
 *.pfx

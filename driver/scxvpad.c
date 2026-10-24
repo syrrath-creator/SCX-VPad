@@ -368,7 +368,15 @@ void ScxIoControl(WDFQUEUE queue, WDFREQUEST request, size_t outLength,
     case IOCTL_HID_READ_REPORT:
         if (!ctx->Online) { status = STATUS_DEVICE_NOT_READY; break; }
         {
+            WDFMEMORY output;
+            size_t capacity;
             ULONG waiting;
+            /* Reject undersized reads before they can occupy bounded wait
+             * slots while the controller is idle. No transition is consumed. */
+            status = WdfRequestRetrieveOutputMemory(request, &output);
+            if (!NT_SUCCESS(status)) break;
+            (void)WdfMemoryGetBuffer(output, &capacity);
+            if (capacity < ctx->ReportLength) { status = STATUS_BUFFER_TOO_SMALL; break; }
             (void)WdfIoQueueGetState(ctx->Reads, &waiting, NULL);
             if (waiting >= SCX_VPAD_HID_QUEUE_CAPACITY) { status = STATUS_DEVICE_BUSY; break; }
         }

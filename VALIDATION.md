@@ -1,5 +1,204 @@
 # Windows validation record
 
+## Exact .35 installed release gate — 24 October 2026: PASS
+
+The following immutable release files were installed and checked on Windows 11
+x64. This is a new run against the actual .35 payload, not a relabelling of
+historical .33/.34 results:
+
+- `SCX-VPad-0.1.0.35-Setup-x64.exe` SHA-256:
+  `3ecd395ccc3a9faf3952b2565da39c0a93359dd0004a1a3eb81dd6831dc57971`
+- Embedded `SCX-VPad-0.1.0.35-windows-x64.zip` SHA-256:
+  `28fbb1695cf33ee69d7a2f62cf0a44d341e516faf9c673a2090783d7404a1633`
+- Installed `ScxVPad.dll`:
+  `f6aebb3db031703ce2a76b41925c08141e35c6faee632442645d61b949eb76ef`
+- Installed `ScxSource.dll`:
+  `4c759d5e14da699d7811fe7b96029f479d83f7424720f2e07af838b68abd3973`
+
+The EXE's own embedded payload and replacement script were used for the
+administrative installation. The old separately journaled local development
+filter was removed first; the new installer now owns all three INF packages.
+The original authorized Windows account and complete identity seed were
+preserved. The service is running. Normal-user checks then passed:
+
+- Generic input, 32-button wheel/flight/arcade profiles, Sony input/initialization/
+  calibration/touch-capable reports, HID rumble/RGB, Xbox XInput input/rumble,
+  neutral/watchdog behavior and owned-device cleanup.
+- Security checks for all seven output profiles: effective access with restricted
+  and low-integrity tokens, capability and bootstrap rejection where applicable.
+- 80 undersized HID reads and 80 undersized Xbox feedback waits: immediate
+  rejection, no output-buffer modification, followed by valid reads and an idle
+  feedback wait whose cancellation was drained. HIDClass rejects the small HID
+  buffer before UMDF (Win32 1784); the Xbox path returns Win32 122. This does not
+  misrepresent the HID result as direct execution of the UMDF-internal branch.
+- GameInput 4.0.302: seven create/reconnect/remove cycles across six layouts:
+  four DualSense (twice), DualSense/DS4/Xbox/wheel, generic/wheel/flight/arcade,
+  two DS4 plus two DualSense, DS4/DualSense/two Xbox, and four Xbox. Each had an
+  early and a late independent consumer. Both saw all four distinct streams
+  after explicit reconnect; each slot kept its independent container/identity.
+- Separate four-DS5, four-DS4 and two-plus-two Sony tests: distinct public HID
+  states, isolated motor pairs and RGB, RGB-only merging, individual motor stops,
+  and removal of each controller without disrupting its siblings.
+- Physical Bluetooth Edge Source Guard: a normal-user authenticated handle read
+  5,570 reports in 12 seconds while unauthorized reads and duplicate ownership
+  were denied. Release restored ordinary access. Killing the owning test process
+  also restored access: 40 reports without errors after a 500-ms cleanup pause.
+- The unchanged SCX 2.1.5 release app forwarded 9,022 physical Edge reports over
+  20 seconds to a virtual DualSense, with clean stop and no input/output/haptic
+  error. A concurrent unauthenticated reader received access denied; ordinary
+  access returned after the app stopped. User profiles were not changed.
+
+The prior manual Tekken/Gears success remains evidence for the unchanged
+independent-container/Source Guard design. Those games were not freshly played
+for this .35 gate. No claim of universal game or anti-cheat compatibility is made.
+The upstream late-start GameInput defect still requires the documented explicit
+reconnect; the gate tests the workaround, not disappearance of that Windows bug.
+
+Build gates passed: 98 workspace Rust tests (two opt-in hardware tests skipped
+in that unit run), 11 isolated Rust source-policy tests, strict Clippy/formatting,
+no_std/native ABI/static analysis, three INF and two catalogue checks; 46 Setup,
+23 package, 11 installer-recovery and 21 identity checks. PowerShell validation
+also ran under Windows PowerShell 5.1. Local diagnostic tokens, real account
+SIDs, device-instance paths and signing keys are excluded from public artifacts.
+
+CPU-only Xbox preparation measured 40.59 to 18.99 ns/report (11 alternating
+samples): reduced work in that segment, not controller-to-game latency. Separate
+Windows API-completion runs used the identical client executable before/after,
+three 10,000-report runs per profile on the active development machine. Median
+ranges (microseconds): generic 20.3–34.1 / 26.8–33.5; DS4 45.3–46.1 / 51.2–53.5;
+DS5 46.0–46.5 / 49.4–49.9; Xbox 18.7–29.0 / 23.0–32.1. These sequential noisy
+runs do not demonstrate an overall latency improvement; the Sony timings were
+higher in this run. No marketing latency/CPU/RAM percentage is derived from them.
+
+The ZIP/EXE remain byte-for-byte unchanged after this qualification. Their bundled
+validation document describes the release gate before execution; this repository
+record and the accompanying qualification asset supply the final measured result.
+
+## Native .35 release qualification
+
+The v0.1.0 release combines the Source Guard/reconnect behavior documented below
+with the audited .35 Rust service/client and UMDF changes. The current release
+must be identified by its Setup/ZIP checksums and native .35 payload hashes;
+historical .33/.34 installed observations do not establish exact-.35 validation.
+Artifact-specific final installation and mixed-controller results accompany the
+release qualification record. Publication requires that installed gate to pass.
+
+The .35 isolated review covers real no_std/C ABI builds, INF/catalog checks,
+Xbox controls-cache equivalence and watchdog tests, undersized-request handling,
+cancellable Source Guard renewal, teardown revocation and process-exit cleanup.
+Package/Setup tests exercise the actual manifest reader with corrupt lengths,
+hashes, metadata, missing filter/catalogue files, archive traversal and duplicate
+entries. Synthetic tests perform no driver, registry or certificate changes.
+
+Performance statements are intentionally narrow: the Xbox preparation
+microbenchmark compares repeated old/new encoding work in-process. It excludes
+WDF, Windows scheduling, physical transport, game sampling and display delay.
+Renewal event/buffer reuse is a removed allocation, not a measured claim that
+whole-app CPU, RAM or controller-to-screen latency improved by that percentage.
+
+Live qualification must retain individual Sony containers and cover four Sony
+devices, Sony/DS4/Xbox/generic mixes, early/late GameInput consumers with explicit
+reconnect, independent inputs/feedback, Source Guard expiry/owner exit and normal
+unelevated SCX operation. The manual Tekken/Gears observations below establish
+the preceding behavior; they are not silently relabelled as a new test run.
+
+Stable channel status is limited to the documented feature set. It does not
+mean WHQL, automatic correction of the upstream GameInput bug, universal source
+isolation or all-game/anti-cheat compatibility.
+
+## Source Guard and explicit reconnect — 24 October 2026
+
+The local source-guard2 service/app build adds an original device-specific UMDF2
+upper filter with allocation-free Rust authorization policy. It matches only the
+physical DualSense Edge Bluetooth gamepad collection. It is not HidHide, a HID
+class filter, a keyboard/mouse filter, or a universal physical-device hiding claim.
+Windows may still enumerate the physical device; unauthorized input/output
+requests on that device are denied while a source lease is active.
+
+Installed Windows evidence under `isolation/`:
+
+- Inactive filter: 40 physical reports, no errors; normal access retained.
+- Wrong capability and second unauthenticated handle: access denied (5).
+  The explicitly authorized handle continues reading. Expired capabilities
+  cannot authenticate a handle. A 3-second lease expires without renewal.
+- Normal, non-elevated SCX client: 3023 physical reports over six seconds;
+  duplicate ownership rejected; renewal outlives the first TTL; disconnect
+  restores the same independent reader. The account cannot read protected keys.
+- Killing only the owned test client restores physical access: lease zero and
+  40 reports with no errors 500 ms later. No service restart or UAC required.
+- Real SCX engine: Edge Bluetooth to virtual DualSense, 20 seconds, 9888 reports,
+  no input/output warnings, errors or haptic errors, clean shutdown. Dispatch
+  timing in this log starts after physical read and is NOT end-to-end latency.
+- Active source protection during four-device GameInput testing: DualSense,
+  DualShock 4, Xbox and wheel. Early/late consumers receive all four independent
+  input streams after explicit reconnection; device/container identities are
+  distinct and unchanged. Sony/Sony/DS4/DS4 and Sony/DS4/Xbox/Xbox also pass.
+- User confirms Tekken 8 and Gears of War: E-Day with Edge Bluetooth to DualSense:
+  normal single menu steps, PlayStation prompts and game rumble, including
+  Alt+Tab and the SCX "re-register controllers" operation. This answers the
+  earlier reproducible physical-source duplicate-input case below.
+
+Evidence: `isolation/normal-user-smoke.txt`, `client-token.json`,
+`registry-acl.txt`, `isolation-read.txt`, `after-owner-crash.txt`,
+`engine-source-guard.txt`, `mixed-active-source.txt`, and the three
+`validation/gameinput34/reconnect-*-20261024-16*` directories. No physical IDs,
+capabilities or account SIDs are embedded in release binaries or defaults.
+
+The .34 package integrates signing, journaled ownership and safe removal of the
+third (source-filter) INF. Eleven installer ownership/recovery cases and 21
+identity-preservation cases pass. Per-client/global source quotas, frame bounds,
+secret rotation, replay rejection and all four independent policies are tested.
+Final .34 package installation is recorded separately when completed; these
+game observations are from the source-guard2 local build, not a WHQL result.
+The Microsoft late-start discovery bug remains upstream; the explicit reconnect
+workaround is tested without changing the separate-container policy.
+
+## Explicit reconnect candidate: discovery pass, physical-source duplication unresolved
+
+Historical investigation before Source Guard; see the newer results above.
+
+24 October 2026, local `reconnect-v1` service/app candidate; native .33 is
+unchanged. Early and late independent GameInput consumers receive four distinct
+connected objects, IDs and input streams after explicit reconnection. Additional
+Sony-mixed, Sony/Xbox-mixed and four-Xbox cases pass, as does concurrent reconnect
+through four real SCX output/feedback workers. These checks do not establish that
+a game ignores an independently visible physical source.
+
+The user reports double D-pad menu navigation in Gears with Edge/Bluetooth ->
+SCX DualSense, after explicit reconnection. A full disconnect, a pause and normal
+connect do not remove it. Closing Steam does not remove it. With SCX disconnected,
+the physical Edge alone operates the menu once per press. External GameInput/WGI
+observations show one virtual device and one press/release transition, rather
+than two simultaneously connected virtual objects. XInput observations in the
+same WGI-initialized observer are process-local projection evidence, not proof
+of a second globally installed virtual device.
+
+Controlled virtual-only comparison `gears-isolated-20261024-151619`: physical
+Edge off, SCX closed, one synthetic virtual DualSense, foreground-gated F7/F8/F9
+inputs, 120-ms pulse per key press. The user confirms single menu steps both
+before and after F6 performs the same service reconnection. The fixture records
+12 presses (5 directional before reconnection, 6 directional plus Cross after),
+retains the same identity and removes its lease on F10. This separates the
+physical-plus-virtual case from the tested virtual-only reconnection case.
+
+The normal-account `sony_access_probe` then tests the physical Edge while SCX,
+Gears, Steam and DSX are closed. Both exclusive read/write and exclusive read
+opens return ERROR_SHARING_VIOLATION (32). Allowing other writers while denying
+other readers also fails with 32. Shared read/write opens succeed. All handles
+are closed immediately; no reports are read/written and no machine settings
+are changed. The two diagnostic binaries pass targeted Clippy with warnings
+denied. Do not claim that merely changing SCX's CreateFile share flags fixes
+the physical duplication on this machine.
+
+HidHide was downloaded/signature-checked but **not installed or configured**;
+the user explicitly declined it. No physical device is disabled, no system
+handle is forcibly closed, and no GameInput service is stopped for this test.
+The old system/shared-container policy is not restored: it fails the required
+Tekken or mixed-device cases. GameInput aggregation is a consumer API, not an
+established way for SCX to force a third-party game to ignore a source device.
+Physical source isolation remains unresolved; this candidate is NOT qualified
+for a stable release.
+
 ## Preview 4 qualification scope — 24 October 2026
 
 Native 0.1.0.33 is being packaged as **v0.1.0-preview.4**, not as a stable

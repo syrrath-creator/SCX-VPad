@@ -1,4 +1,79 @@
-# SCX VPad v0.1.0-preview.4 — native revision 0.1.0.33
+# SCX VPad v0.1.0 — native revision 0.1.0.35
+
+The first stable channel for the documented Windows 11 x64 feature set: Xbox
+360, DualShock 4, DualSense and input-only generic gamepad, wheel, flight-stick
+and arcade-stick outputs. Stable is a release channel, not WHQL certification.
+
+## Reliability and compatibility
+
+- SCX Source Guard reserves the qualified physical DualSense Edge Bluetooth
+  gamepad while SCX uses it, addressing physical-plus-virtual duplicate input
+  without HidHide. Other physical sources retain their existing behavior.
+- Normal connect/disconnect/reconnect operations need no administrator rights.
+  Installation/update still requires UAC and creates a local signing certificate.
+- The explicit Re-register controllers operation recovers the tested late-start
+  GameInput discovery case for four Sony or mixed virtual controllers. Separate
+  containers, profiles and stable IDs are preserved. This is a workaround for
+  the upstream issue, not an automatic Windows patch or game-specific override.
+- Rust authorization policies, bounded leases and per-handle capabilities retain
+  source isolation; disconnect, process exit or lease expiry restores access.
+  The existing Sony identity policy used by Tekken and Gears is unchanged.
+
+## Performance and safety
+
+- Xbox submit preparation validates/encodes each new packet once and compares
+  cached controls, eliminating repeated work while retaining packet numbering,
+  strict validation and watchdog behavior. This is not an end-to-end latency claim.
+- Undersized HID-read and Xbox-feedback requests are rejected before consuming
+  bounded pending-request queue slots.
+- Source Guard renewals reuse serial I/O events and pre-encoded fixed responses.
+  Guard teardown immediately invalidates cloned access and cancels its worker;
+  delayed responses cannot revive released/expired access. Input reports still
+  bypass the service management path. Client changes require a rebuilt SDK user.
+- Complete package manifests enforce byte lengths, hashes, mandatory files,
+  platform and channel. Stable builds require Source Guard and matching native
+  DLL/INF versions. Setup verifies the embedded ZIP before protected staging.
+- Added regression tests for malformed/repacked installers, identity retention,
+  bounded renewal cancellation and changed/expired source leases. CI now builds
+  the physical source filter and tests the real graphical installer parser.
+
+## Installing and known scope
+
+Use `SCX-VPad-0.1.0.35-Setup-x64.exe`, or the matching
+`SCX-VPad-0.1.0.35-windows-x64.zip`, and compare `SHA256SUMS.txt`. Setup is not
+publicly publisher-signed. No private certificate key is distributed, and
+Secure Boot/Memory Integrity remain unchanged.
+
+Source Guard is qualified for Edge Bluetooth, not every device or USB Edge.
+Generic HID outputs have no force feedback or rumble. Sony outputs do not
+implement USB audio, adaptive-trigger programs, console pairing or Bluetooth
+radio emulation. An already-running game may require explicit reconnection.
+See VALIDATION.md for current artifact evidence and historical comparisons.
+
+# Historical revision 0.1.0.34 candidate
+
+- Own SCX Source Guard for the qualified DualSense Edge Bluetooth gamepad
+  collection. Physical input is reserved to authorized SCX handles while connected,
+  preventing the confirmed Gears duplicate-input case. No HidHide dependency.
+- Normal connect, disconnect and reconnect require no elevation. The existing
+  service issues bounded leases; expiry/client exit restores ordinary input.
+- Rust policy, 256-bit capabilities per handle, protected transient policy,
+  independent device leases, per-client/global quotas, strict request decoding
+  and rejection of unqualified source instances. No input-packet service hop.
+- Explicit reconnection recovers all four mixed virtual devices for the tested
+  late-start GameInput consumer. Profiles, stable IDs and separate containers
+  remain intact; no game-specific or shared-PC-container workaround.
+- Matching SCX app shows source protection state in all 15 UI languages.
+- Source filter is included in package verification, local catalog signing,
+  installation ownership journal and scoped uninstall/recovery.
+
+The local source-guard2 build passed real Tekken/Gears user tests and mixed
+four-controller Windows checks. Final .34 package installation remains a distinct
+qualification step. Source Guard currently matches Edge Bluetooth only; it does
+not promise filtering of every controller or hide device enumeration. Locally
+signed UMDF2, not WHQL-certified. See VALIDATION.md for evidence.
+
+# Historical v0.1.0-preview.4 — native revision 0.1.0.33
 
 **Development preview, not stable. Known issue:** with GameInput 4.0.302, a
 consumer started after four SCX Sony controllers already exist can discover

@@ -19,6 +19,11 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Verify isolated Rust Source Guard policy
+        run: |
+          cargo fmt --manifest-path isolation/policy/Cargo.toml -- --check
+          cargo test --manifest-path isolation/policy/Cargo.toml --locked
+          cargo clippy --manifest-path isolation/policy/Cargo.toml --all-targets --locked -- -D warnings
       - name: Execute installer recovery tests in Windows PowerShell 5.1
         if: runner.os == 'Windows'
         shell: powershell
@@ -27,6 +32,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./scripts/test-gameinput-mappings.ps1
+      - name: Verify package safety, service configuration and replacement identities
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./scripts/test-package-validation.ps1 -RequireWindowsPowerShell51
+          ./scripts/test-service-configuration.ps1
+          ./scripts/test-setup-identity.ps1 -RequireWindowsPowerShell51
   driver:
     runs-on: windows-latest
     steps:
@@ -34,15 +46,22 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy --component rust-docs
       - name: Fetch pinned official WDK build dependencies
         shell: pwsh
         run: ./scripts/fetch-wdk.ps1
-      - name: Build driver core
-        run: cargo build --release --locked -p scx-vpad-core --no-default-features --target-dir target/driver-core
-      - name: Build and validate UMDF package
+      - name: Fetch pinned Rust dependencies
+        run: cargo fetch --locked
+      - name: Build and validate complete UMDF and Source Guard package
         shell: pwsh
-        run: ./scripts/build-driver.ps1 -RustLibrary ./target/driver-core/release/scx_vpad_core.lib
+        run: ./scripts/build-package.ps1 -IncludeSourceGuard -Destination ./artifacts/package
+      - name: Build and regression-test graphical Setup without installation
+        shell: pwsh
+        run: |
+          Compress-Archive -Path ./artifacts/package/* -DestinationPath ./artifacts/package.zip
+          $digest = (Get-FileHash ./artifacts/package.zip -Algorithm SHA256).Hash
+          ./scripts/build-setup.ps1 -PackageZip ./artifacts/package.zip -ExpectedSha256 $digest -OutputDirectory ./artifacts/setup
+          ./scripts/test-setup.ps1 -PackageZip ./artifacts/package.zip -BuildDirectory ./artifacts/setup
       - name: Build independent Windows Gaming Input diagnostic
         shell: pwsh
         run: ./scripts/build-wgi-probe.ps1

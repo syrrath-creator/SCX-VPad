@@ -1,0 +1,19 @@
+[package]
+name = "scx-source-policy"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+default = ["std"]
+std = []
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1

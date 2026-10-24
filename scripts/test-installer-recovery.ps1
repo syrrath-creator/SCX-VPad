@@ -76,6 +76,23 @@ try {
     $beforeStaging = [pscustomobject]@{ InstallDirectory=$installRoot }
     if (@(Get-OwnedDriverPackages $beforeStaging $installRoot $infRoot).Count -ne 0) { throw 'An interrupted pre-staging install claimed a driver.' }
     Write-Output 'PASS 7/7: pre-staging failure owns no driver'
+
+    $sourceInf = Join-Path $installRoot 'driver/scxsource.inf'
+    Set-Content -LiteralPath $sourceInf -Value 'Synthetic SCX Source Guard package'
+    $sourceHash = (Get-FileHash -LiteralPath $sourceInf -Algorithm SHA256).Hash
+    Copy-Item -LiteralPath $sourceInf -Destination (Join-Path $infRoot 'oem5.inf')
+    Copy-Item -LiteralPath $sourceInf -Destination (Join-Path $infRoot 'oem6.inf')
+    $journal[0].inf = 'scxvpad.inf'; $journal[0].attempted = $true
+    $sourceStage = [pscustomobject]@{ inf='scxsource.inf'; property='PublishedSourceInf'; sha256=$sourceHash; baseline=@('oem1.inf','oem5.inf'); attempted=$true; published=@() }
+    $sourceJournal = @($journal) + @($sourceStage)
+    if ((@(Resolve-TestJournal $sourceJournal).name | Sort-Object) -join ',' -ne 'oem2.inf,oem3.inf,oem6.inf') { throw 'Source Guard ownership recovery failed.' }
+    Write-Output 'PASS: Source Guard partial import recovered; pre-existing filter excluded'
+    $sourceStage.published = @('oem5.inf')
+    Assert-Rejected { Resolve-TestJournal $sourceJournal } 'Claimed an existing physical source filter.'
+    $sourceStage.published = @()
+    Assert-Rejected { Resolve-TestJournal @($journal[0], $sourceStage) } 'Accepted a journal missing the XUSB package.'
+    Assert-Rejected { Resolve-TestJournal @($journal[0], $journal[0], $sourceStage) } 'Accepted duplicate driver journal entries.'
+    Write-Output 'PASS: Source Guard baseline, incomplete and duplicate journals rejected'
 } finally {
     # Resolve the exact unique temporary directory before the only recursive
     # removal. Its children are test-created files; no Windows paths are used.
@@ -87,4 +104,4 @@ try {
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
 }
-Write-Output ('Installer recovery: 7 passed on PowerShell ' + $PSVersionTable.PSVersion)
+Write-Output ('Installer recovery: 11 passed on PowerShell ' + $PSVersionTable.PSVersion)

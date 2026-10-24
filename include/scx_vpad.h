@@ -46,6 +46,9 @@ typedef enum SCX_VPAD_PROFILE {
 #define SCX_VPAD_FEEDBACK_FIELDS_OFFSET 8u
 #define SCX_VPAD_FEEDBACK_PLAYER_VALID 4u
 #define SCX_VPAD_HID_QUEUE_CAPACITY 64u
+#define SCX_VPAD_XUSB_STATE_REPORT_SIZE 29u
+#define SCX_VPAD_XUSB_CONTROLS_OFFSET 11u
+#define SCX_VPAD_XUSB_CONTROLS_SIZE 12u
 
 /* Private in-process storage ABI (not a packed/wire struct). Rust owns ALL
  * fields; C only allocates/aligns the storage. Initialized once per new device,

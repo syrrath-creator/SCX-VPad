@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "scx-source-policy"
+version = "0.0.1"
+
+[[package]]
 name = "scx-vpad-client"
 version = "0.1.0"
 dependencies = [
@@ -25,6 +29,7 @@ version = "0.1.0"
 name = "scx-vpad-service"
 version = "0.1.0"
 dependencies = [
+ "scx-source-policy",
  "scx-vpad-client",
  "scx-vpad-protocol",
  "windows-sys",

@@ -1,0 +1,48 @@
+; Original SCX device-specific source filter. Qualified Edge Bluetooth collection ONLY.
+[Version]
+Signature="$WINDOWS NT$"
+Class=HIDClass
+ClassGuid={745a17a0-74d3-11d0-b6fe-00a0c90f57da}
+Provider=%Provider%
+DriverVer=10/24/2026,0.1.0.35
+CatalogFile=scxsource.cat
+PnpLockdown=1
+[Manufacturer]
+%Provider%=SCX,NTamd64.10.0...22000
+[SCX.NTamd64.10.0...22000]
+%Device%=Source,HID\{00001124-0000-1000-8000-00805f9b34fb}_VID&0002054c_PID&0df2
+[DestinationDirs]
+DriverFiles=13
+[SourceDisksNames]
+1=%Disk%,,,
+[SourceDisksFiles]
+ScxSource.dll=1
+[Source.NT]
+CopyFiles=DriverFiles
+Include=input.inf,WUDFRD.inf
+Needs=HID_Raw_Inst.NT,WUDFRD_UpperFilter.NT
+[Source.NT.HW]
+Include=WUDFRD.inf
+Needs=WUDFRD_UpperFilter.NT.HW
+[Source.NT.Services]
+Include=input.inf,WUDFRD.inf
+Needs=HID_Raw_Inst.NT.Services,WUDFRD_UpperFilter.NT.Services
+[Source.NT.Filters]
+Include=WUDFRD.inf
+Needs=WUDFRD_UpperFilter.NT.Filters
+[Source.NT.Wdf]
+UmdfService=ScxSource,SourceUmdf
+UmdfServiceOrder=ScxSource
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+UmdfFileObjectPolicy=AllowNullAndUnknownFileObjects
+UmdfMethodNeitherAction=Copy
+UmdfHostProcessSharing=ProcessSharingDisabled
+[SourceUmdf]
+UmdfLibraryVersion=2.25.0
+ServiceBinary=%13%\ScxSource.dll
+[DriverFiles]
+ScxSource.dll
+[Strings]
+Provider="SCX"
+Device="SCX Source Guard (Edge Bluetooth)"
+Disk="SCX Source Guard"

@@ -5,6 +5,7 @@ edition.workspace = true
 license-file = "../../LICENSE"
 
 [dependencies]
+scx-source-policy = { path = "../../isolation/policy" }
 scx-vpad-client = { path = "../scx-vpad-client" }
 scx-vpad-protocol = { path = "../scx-vpad-protocol" }
 

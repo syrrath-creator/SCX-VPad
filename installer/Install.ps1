@@ -12,7 +12,7 @@ $serviceName = 'ScxVPad'
 $productKey = 'HKLM:\SOFTWARE\SCX\VirtualPad'
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $AuthorizedUserSid) { $AuthorizedUserSid = $identity.User.Value }
-if ($AuthorizedUserSid -notmatch '^S-1-5-21-(\d+-){3}\d+$') {
+if ($AuthorizedUserSid -notmatch '\AS-1-5-21-(\d+-){3}\d+\z') {
     throw 'Provide the SID of the local interactive user who will use SCX VPad.'
 }
 $isAdmin = ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -26,40 +26,17 @@ if (-not $isAdmin) {
     return
 }
 $packageRoot = Split-Path -Parent $PSScriptRoot
-$manifestPath = Join-Path $packageRoot 'package-manifest.json'
-if (-not (Test-Path -LiteralPath $manifestPath)) { throw 'Run the installer from a complete release package.' }
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ($manifest.product -ne 'SCX-VPad' -or $manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid package identity.' }
-function Assert-LocalPackagePath([string]$FullPath, [string]$RootPath) {
-    $cursor = Get-Item -LiteralPath $FullPath
-    while ($null -ne $cursor) {
-        if ($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Redirected package paths are not supported.' }
-        if ($cursor.FullName.TrimEnd('\') -eq $RootPath.TrimEnd('\')) { return }
-        $cursor = if ($cursor -is [IO.DirectoryInfo]) { $cursor.Parent } else { $cursor.Directory }
-    }
-    throw 'Package path did not resolve inside its root.'
-}
+. (Join-Path $PSScriptRoot 'Package.ps1')
+$manifest = Get-ScxVerifiedPackage $packageRoot
 $buildNumber = [int](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuildNumber
 if ($buildNumber -lt 22000 -or -not [Environment]::Is64BitOperatingSystem) { throw 'This build requires Windows 11 x64.' }
 if (Test-Path -LiteralPath $productKey) { throw 'SCX VPad is already installed. Uninstall the existing development build first.' }
 if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) { throw 'The SCX VPad service name is already in use.' }
-$packagePrefix = [IO.Path]::GetFullPath($packageRoot).TrimEnd('\') + '\'
-$seenPaths = @{}
-foreach ($entry in $manifest.files) {
-    if ($entry.path -notmatch '^[A-Za-z0-9][A-Za-z0-9_./\\ -]*$' -or [IO.Path]::IsPathRooted($entry.path)) { throw 'Invalid relative manifest path.' }
-    foreach ($segment in ($entry.path -split '[\\/]')) {
-        if (-not $segment -or $segment -eq '.' -or $segment -eq '..' -or $segment.EndsWith('.') -or $segment.EndsWith(' ')) { throw 'Ambiguous manifest path component.' }
-    }
-    if ($entry.sha256 -notmatch '^[A-Fa-f0-9]{64}$') { throw 'Invalid manifest digest.' }
-    $path = [IO.Path]::GetFullPath((Join-Path $packageRoot $entry.path))
-    if (-not $path.StartsWith($packagePrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Manifest path escaped package.' }
-    if ($seenPaths.ContainsKey($path)) { throw 'Duplicate manifest path.' }
-    $seenPaths[$path] = $true
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing package file: $($entry.path)" }
-    Assert-LocalPackagePath $path $packageRoot
-    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $entry.sha256) { throw "Package hash mismatch: $($entry.path)" }
-}
 $destination = [IO.Path]::GetFullPath((Join-Path $programFilesDirectory 'SCX VPad'))
+$sourceMembers = @('driver/ScxSource.dll','driver/scxsource.inf','driver/scxsource.cat')
+$sourceMemberCount = @($manifest.files | Where-Object { $_.path.Replace('\','/') -in $sourceMembers }).Count
+if ($sourceMemberCount -notin @(0,3)) { throw 'Incomplete SCX Source Guard package.' }
+$withSourceGuard = $sourceMemberCount -eq 3
 if (Test-Path -LiteralPath $destination) { throw 'The installation directory already exists; refusing to overwrite it.' }
 $createdDestination = $false
 $createdRecord = $false
@@ -121,16 +98,20 @@ try {
     }
     # The driver catalogue covers the built INF and DLL. Sign only the catalogue
     # here so no covered file changes after Inf2Cat generated its member hashes.
-    foreach ($relative in @('driver\scxvpad.cat','bin\scx-vpad-service.exe','bin\scx-vpadctl.exe','bin\xinput_probe.exe')) {
+    $signMembers = @('driver\scxvpad.cat','bin\scx-vpad-service.exe','bin\scx-vpadctl.exe','bin\xinput_probe.exe')
+    if ($withSourceGuard) { $signMembers += 'driver\scxsource.cat' }
+    foreach ($relative in $signMembers) {
         $signedPath = Join-Path $destination $relative
         $signature = Set-AuthenticodeSignature -LiteralPath $signedPath -Certificate $certificate -HashAlgorithm SHA256
         if ($signature.Status -ne 'Valid') { throw "Local signing failed for $relative : $($signature.StatusMessage)" }
     }
-    # Journal BOTH INFs before either import. A failed/aborted pnputil can still
+    # Journal every included INF before import. A failed/aborted pnputil can still
     # stage a package, so deletion must recover by exact hash minus the baseline.
     $baseline = @(Get-ChildItem -LiteralPath $infDirectory -Filter 'oem*.inf' -File | ForEach-Object Name)
+    $driverPackages = @(@('scxvpad.inf','PublishedInf'), @('scxxusb.inf','PublishedXusbInf'))
+    if ($withSourceGuard) { $driverPackages += ,@('scxsource.inf','PublishedSourceInf') }
     $journal = @(
-        foreach ($package in @(@('scxvpad.inf','PublishedInf'), @('scxxusb.inf','PublishedXusbInf'))) {
+        foreach ($package in $driverPackages) {
             $infHash = (Get-FileHash -LiteralPath (Join-Path $destination ('driver\' + $package[0])) -Algorithm SHA256).Hash
             $existing = @(Get-ChildItem -LiteralPath $infDirectory -Filter 'oem*.inf' -File | Where-Object { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash -eq $infHash })
             if ($existing.Count) { throw 'An identical SCX INF already exists. Refusing to claim ownership of a pre-existing driver package.' }

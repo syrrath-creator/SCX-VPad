@@ -1,21 +1,28 @@
 [CmdletBinding()]
-param([string]$Destination, [switch]$SkipTests)
+param([string]$Destination, [switch]$SkipTests, [switch]$IncludeSourceGuard, [ValidateSet('preview','stable')][string]$ReleaseChannel = 'preview')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Destination) { $Destination = Join-Path $root 'dist/SCX-VPad-0.1.0-windows-x64' }
 $Destination = [IO.Path]::GetFullPath($Destination)
 if (Test-Path -LiteralPath $Destination) { throw 'Choose a new package directory; existing packages are never overwritten.' }
+if ($ReleaseChannel -eq 'stable' -and ($SkipTests -or -not $IncludeSourceGuard)) { throw 'Stable packages require all tests and Source Guard.' }
+if ($ReleaseChannel -eq 'stable') {
+    & (Join-Path $PSScriptRoot 'cargo.ps1') -CargoArgs @('fmt','--all','--','--check')
+    & (Join-Path $PSScriptRoot 'cargo.ps1') -CargoArgs @('clippy','--workspace','--all-targets','--locked','--offline','--','-D','warnings')
+}
 if (-not $SkipTests) {
     & (Join-Path $PSScriptRoot 'cargo.ps1') -CargoArgs @('test','--workspace','--locked','--offline')
     & (Join-Path $PSScriptRoot 'test-service-configuration.ps1')
     & (Join-Path $PSScriptRoot 'test-installer-recovery.ps1')
     & (Join-Path $PSScriptRoot 'test-gameinput-mappings.ps1')
     & (Join-Path $PSScriptRoot 'test-setup-identity.ps1')
+    & (Join-Path $PSScriptRoot 'test-package-validation.ps1')
 }
 & (Join-Path $PSScriptRoot 'cargo.ps1') -CargoArgs @('build','--release','--locked','--offline','-p','scx-vpad-service','-p','scx-vpadctl')
 # Keep the driver's no_std build separate from the SDK's std-enabled core.
 & (Join-Path $PSScriptRoot 'cargo.ps1') -CargoArgs @('build','--release','--locked','--offline','-p','scx-vpad-core','--no-default-features','--target-dir','target/driver-core')
 & (Join-Path $PSScriptRoot 'build-driver.ps1') -RustLibrary (Join-Path $root 'target/driver-core/release/scx_vpad_core.lib')
+if ($IncludeSourceGuard) { & (Join-Path $root 'isolation/Build.ps1') }
 & (Join-Path $PSScriptRoot 'collect-licenses.ps1')
 $files = [ordered]@{
     'bin/scx-vpad-service.exe' = 'target/release/scx-vpad-service.exe'
@@ -29,6 +36,7 @@ $files = [ordered]@{
     'installer/Uninstall.ps1' = 'installer/Uninstall.ps1'
     'installer/GameInput.ps1' = 'installer/GameInput.ps1'
     'installer/Service.ps1' = 'installer/Service.ps1'
+    'installer/Package.ps1' = 'installer/Package.ps1'
     'LICENSE' = 'LICENSE'
     'README.md' = 'README.md'
     'SECURITY.md' = 'SECURITY.md'
@@ -41,12 +49,22 @@ $files = [ordered]@{
     'driver/README.md' = 'driver/README.md'
     'THIRD-PARTY-NOTICES.txt' = 'THIRD-PARTY-NOTICES.txt'
 }
+if ($IncludeSourceGuard) {
+    foreach ($name in @('ScxSource.dll','scxsource.inf','scxsource.cat')) {
+        $files['driver/' + $name] = 'isolation/build/' + $name
+    }
+}
 Get-ChildItem -LiteralPath (Join-Path $root 'licenses') -File | ForEach-Object { $files['licenses/' + $_.Name] = 'licenses/' + $_.Name }
 $driverVersion = (Get-Item -LiteralPath (Join-Path $root 'target/driver/x64/ScxVPad.dll')).VersionInfo.FileVersion
 if ($driverVersion -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'Missing valid native driver file version.' }
 foreach ($infName in @('scxvpad.inf','scxxusb.inf')) {
     $inf = Get-Content -LiteralPath (Join-Path $root "target/driver/x64/$infName") -Raw
     if ($inf -notmatch ('(?m)^DriverVer=[^,]+,' + [regex]::Escape($driverVersion) + '\s*$')) { throw 'INF/DLL version mismatch.' }
+}
+if ($IncludeSourceGuard) {
+    $sourceVersion = (Get-Item -LiteralPath (Join-Path $root 'isolation/build/ScxSource.dll')).VersionInfo.FileVersion
+    $sourceInf = Get-Content -LiteralPath (Join-Path $root 'isolation/build/scxsource.inf') -Raw
+    if ($sourceVersion -ne $driverVersion -or $sourceInf -notmatch ('(?m)^DriverVer=[^,]+,' + [regex]::Escape($driverVersion) + '\s*$')) { throw 'Source Guard/VPad version mismatch.' }
 }
 $manifest = @()
 foreach ($item in $files.GetEnumerator()) {
@@ -57,8 +75,10 @@ foreach ($item in $files.GetEnumerator()) {
     Copy-Item -LiteralPath $source -Destination $target
     $manifest += [ordered]@{ path=$item.Key; bytes=(Get-Item -LiteralPath $target).Length; sha256=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash }
 }
-[ordered]@{ product='SCX-VPad'; version='0.1.0'; driverVersion=$driverVersion; platform='windows-x64'; minimumBuild=22000; files=$manifest } |
+[ordered]@{ product='SCX-VPad'; version='0.1.0'; driverVersion=$driverVersion; releaseChannel=$ReleaseChannel; platform='windows-x64'; minimumBuild=22000; files=$manifest } |
     ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Destination 'package-manifest.json') -Encoding utf8
-Write-Output "Packaged unsigned development binaries: $Destination"
+. (Join-Path $root 'installer/Package.ps1')
+Get-ScxVerifiedPackage $Destination | Out-Null
+Write-Output "Packaged unsigned $ReleaseChannel binaries: $Destination"
 Write-Output 'The package is signed locally by its explicit administrative installer. No private key is distributed.'
 

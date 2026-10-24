@@ -12,6 +12,9 @@ pub const MAX_RESPONSE: usize = RESPONSE_HEADER_SIZE + MAX_INSTANCE_CHARS * 2;
 pub const OP_STATUS: u16 = 1;
 pub const OP_CREATE: u16 = 2;
 pub const OP_RELEASE: u16 = 3;
+/// Re-enumerates this pipe's existing lease, retaining its reserved PnP slot.
+pub const OP_RECONNECT: u16 = 5;
+pub const RECONNECT_CAPABILITY: &str = "reconnect-v1";
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_INVALID: u32 = 1;
 pub const STATUS_UNSUPPORTED: u32 = 2;
@@ -110,9 +113,15 @@ impl Request {
             lease: u64_at(b, 12),
         };
         match r.op {
-            OP_STATUS if r.profile == 0 && r.lease == 0 => Ok(r),
+            OP_STATUS | crate::source_wire::OP_SOURCE_ACQUIRE if r.profile == 0 && r.lease == 0 => {
+                Ok(r)
+            }
             OP_CREATE if r.profile != 0 && r.lease == 0 => Ok(r),
-            OP_RELEASE if r.profile == 0 && r.lease != 0 => Ok(r),
+            OP_RELEASE | OP_RECONNECT | crate::source_wire::OP_SOURCE_RENEW
+                if r.profile == 0 && r.lease != 0 =>
+            {
+                Ok(r)
+            }
             _ => Err(invalid("invalid operation fields")),
         }
     }
@@ -241,6 +250,61 @@ mod tests {
             },
         ] {
             assert!(Request::decode(&r.encode()).is_err());
+        }
+    }
+    #[test]
+    fn reconnect_requires_an_existing_lease_and_no_new_profile() {
+        let valid = Request {
+            op: OP_RECONNECT,
+            profile: 0,
+            lease: 42,
+        };
+        assert_eq!(Request::decode(&valid.encode()).unwrap(), valid);
+        for request in [
+            Request { lease: 0, ..valid },
+            Request {
+                profile: 4,
+                ..valid
+            },
+        ] {
+            assert!(Request::decode(&request.encode()).is_err());
+        }
+        let mut bytes = valid.encode();
+        for offset in 20..REQUEST_SIZE {
+            bytes[offset] = 1;
+            assert!(Request::decode(&bytes).is_err());
+            bytes[offset] = 0;
+        }
+    }
+    #[test]
+    fn source_operations_cannot_change_virtual_profiles_or_reuse_acquire_leases() {
+        use crate::source_wire::{OP_SOURCE_ACQUIRE, OP_SOURCE_RENEW};
+        for (op, lease) in [(OP_SOURCE_ACQUIRE, 0), (OP_SOURCE_RENEW, 42)] {
+            let request = Request {
+                op,
+                profile: 0,
+                lease,
+            };
+            assert_eq!(Request::decode(&request.encode()).unwrap(), request);
+            assert!(Request::decode(
+                &Request {
+                    profile: 4,
+                    ..request
+                }
+                .encode()
+            )
+            .is_err());
+        }
+        for (op, lease) in [(OP_SOURCE_ACQUIRE, 42), (OP_SOURCE_RENEW, 0)] {
+            assert!(Request::decode(
+                &Request {
+                    op,
+                    profile: 0,
+                    lease
+                }
+                .encode()
+            )
+            .is_err());
         }
     }
     #[test]

@@ -11,3 +11,7 @@ pub mod win;
 pub mod wire;
 #[cfg(windows)]
 pub use client::{device_present, service_status, FeedbackReader, GamepadReader, VirtualPad};
+
+#[cfg(windows)]
+pub mod source;
+pub mod source_wire;

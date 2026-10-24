@@ -9,6 +9,8 @@
 _Static_assert(sizeof(SCX_VPAD_HID_STATE) == 4248, "Rust state storage size");
 _Static_assert(_Alignof(SCX_VPAD_HID_STATE) == 4, "Rust state alignment");
 _Static_assert(offsetof(SCX_VPAD_HID_STATE, private_current) == 4120, "Rust current offset");
+_Static_assert(SCX_VPAD_XUSB_CONTROLS_OFFSET + SCX_VPAD_XUSB_CONTROLS_SIZE <= SCX_VPAD_XUSB_STATE_REPORT_SIZE,
+               "Cached XUSB controls must be inside the encoded report");
 
 /* Exercise exactly the FFI functions used by WDF, including unsuccessful reads,
  * timeout/replay handling, four independent devices and output field merging. */
@@ -239,6 +241,14 @@ int main(void)
                                  output + 1, 36, &length) == 0);
         CHECK(length == 29 && output[6] == 42 && output[13] == 0x10);
         CHECK(output[0] == 0x5a && output[30] == 0x5a);
+        CHECK(SCX_VPAD_XUSB_STATE_REPORT_SIZE == length);
+        CHECK(output[1 + SCX_VPAD_XUSB_CONTROLS_OFFSET + 1] == 0x10);
+        frame[60] = 1;
+        memset(output, 0x5a, sizeof(output));
+        CHECK(scx_vpad_xusb_state_report(frame, sizeof(frame), 0, 0,
+            output + 1, SCX_VPAD_XUSB_STATE_REPORT_SIZE) == SCX_VPAD_INVALID_PACKET);
+        for (offset = 0; offset < sizeof(output); ++offset) CHECK(output[offset] == 0x5a);
+        frame[60] = 0;
         CHECK(scx_vpad_xusb_decode_output(setState, 5, feedback, sizeof(feedback)) == 0);
         CHECK(feedback[8] == 1 && feedback[12] == 255 && feedback[13] == 255);
         CHECK(feedback[14] == 32 && feedback[15] == 32 && feedback[24] == 2);

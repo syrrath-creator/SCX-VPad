@@ -21,14 +21,14 @@ $actual = [IO.Path]::GetFullPath($record.InstallDirectory).TrimEnd('\')
 if ($actual -ne $expected) { throw 'Installation directory does not match the fixed SCX VPad location.' }
 if ((Test-Path -LiteralPath $actual) -and ((Get-Item -LiteralPath $actual).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Refusing to remove a redirected installation directory.' }
 function Get-OwnedDriverPackages($InstallRecord, [string]$InstallRoot, [string]$InfRoot) {
-    $known = @{ 'scxvpad.inf'='PublishedInf'; 'scxxusb.inf'='PublishedXusbInf' }
+    $known = @{ 'scxvpad.inf'='PublishedInf'; 'scxxusb.inf'='PublishedXusbInf'; 'scxsource.inf'='PublishedSourceInf' }
     $result = @{}
     if ($InstallRecord.PSObject.Properties.Name -contains 'DriverStageJournal') {
         # Windows PowerShell 5.1 emits a JSON array as one pipeline object.
         # Assign first, then normalize; @(... | ConvertFrom-Json) nests it.
         $decodedJournal = ConvertFrom-Json -InputObject $InstallRecord.DriverStageJournal
         $journal = @($decodedJournal)
-        if ($journal.Count -ne 2) { throw 'Incomplete driver staging journal; refusing speculative removal.' }
+        if ($journal.Count -notin @(2,3)) { throw 'Incomplete driver staging journal; refusing speculative removal.' }
         $seen = @{}
         foreach ($stage in $journal) {
             foreach ($field in @('inf','property','sha256','baseline','attempted','published')) {
@@ -58,6 +58,9 @@ function Get-OwnedDriverPackages($InstallRecord, [string]$InstallRoot, [string]$
                     $result[$name] = [string]$stage.sha256
                 }
             }
+        }
+        if (-not $seen.ContainsKey('scxvpad.inf') -or -not $seen.ContainsKey('scxxusb.inf')) {
+            throw 'Driver journal is missing a required virtual device package.'
         }
     } else {
         # Backward-compatible removal of earlier development installations.

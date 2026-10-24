@@ -18,6 +18,7 @@ use windows_sys::{
     },
 };
 mod bootstrap;
+mod source;
 
 const MAX_CONNECTIONS: u32 = 24;
 const MAX_DEVICES: usize = 16;
@@ -117,6 +118,7 @@ fn run() -> io::Result<()> {
     let owner = Arc::new(install_owner()?);
     let identity_seed = install_identity_seed()?;
     bootstrap::initialize()?;
+    source::initialize()?;
     let stop = Arc::new(Handle::event()?);
     // No generic write right on the client ACE: FILE_GENERIC_WRITE includes the
     // FILE_CREATE_PIPE_INSTANCE bit. Explicit rights allow only client I/O.
@@ -309,8 +311,11 @@ fn serve(
     let request = receive(&pipe, &stop, 5000)?;
     let identity = authenticate(&pipe, &owner)?;
     if request.op == OP_STATUS {
-        reply(&pipe, &stop, request.op, STATUS_OK, 0, "")?;
+        reply(&pipe, &stop, request.op, STATUS_OK, 0, RECONNECT_CAPABILITY)?;
         return Ok(());
+    }
+    if request.op == scx_vpad_client::source_wire::OP_SOURCE_ACQUIRE {
+        return source::serve_source(&pipe, &stop, &identity);
     }
     if request.op != OP_CREATE {
         reply(&pipe, &stop, request.op, STATUS_INVALID, 0, "")?;
@@ -331,7 +336,7 @@ fn serve(
             return Ok(());
         }
     };
-    let device = match Device::create(
+    let mut device = match Device::create(
         &identity.sid,
         reservation.slot,
         reservation.player_index,
@@ -364,12 +369,58 @@ fn serve(
     // process inherited/duplicated its pipe handle. Broken pipe, cancellation,
     // panic or valid release all
     // drop the software-device handle before releasing its quota.
-    let result = receive_release(&pipe, &stop, &identity.process);
-    if let Ok(request) = result {
-        if request.op == OP_RELEASE && request.lease == lease {
-            drop(device);
-            drop(reservation);
-            return Ok(());
+    let mut last_reconnect: Option<std::time::Instant> = None;
+    while let Ok(request) = receive_release(&pipe, &stop, &identity.process) {
+        if request.lease != lease {
+            break;
+        }
+        if request.op == OP_RELEASE {
+            break;
+        }
+        if request.op != OP_RECONNECT {
+            break;
+        }
+        // An explicit owner request only. No process monitoring, timers or
+        // automatic replugging while a game is running. Throttle each lease.
+        if last_reconnect.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(5)) {
+            reply(&pipe, &stop, OP_RECONNECT, STATUS_QUOTA, lease, "")?;
+            continue;
+        }
+        last_reconnect = Some(std::time::Instant::now());
+        let original_instance = device.instance.clone();
+        drop(device);
+        // Reservation remains held until this connection ends. Identical
+        // profiles cannot exchange slots, player indices or container IDs.
+        device = Device::create(
+            &identity.sid,
+            reservation.slot,
+            reservation.player_index,
+            profile,
+            identity_seed,
+            &stop,
+        )?;
+        if device.instance != original_instance {
+            return Err(fail("reconnect changed device identity"));
+        }
+        if let Some(bootstrap) = &device.bootstrap {
+            reply_capability(
+                &pipe,
+                &stop,
+                OP_RECONNECT,
+                STATUS_OK,
+                lease,
+                &device.instance,
+                &bootstrap.capability,
+            )?;
+        } else {
+            reply(
+                &pipe,
+                &stop,
+                OP_RECONNECT,
+                STATUS_OK,
+                lease,
+                &device.instance,
+            )?;
         }
     }
     drop(device);

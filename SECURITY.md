@@ -73,8 +73,29 @@ disable Secure Boot, Memory Integrity, driver-signature enforcement, security
 software, or test-signing policy. Locally trusted signatures do not constitute
 Microsoft WHQL certification or an anti-cheat compatibility guarantee.
 
+Source Guard is a separate, original UMDF2 upper filter restricted to the
+qualified physical DualSense Edge Bluetooth gamepad collection. Its Rust policy
+accepts bounded, authenticated per-device leases and random per-handle
+capabilities; replayed or expired authorization cannot acquire source access.
+The management service never proxies physical input reports. Client teardown
+or lease expiry restores normal input access. The filter is not installed as a
+HID class-wide filter and does not reserve keyboards, mice or arbitrary devices.
+The source remains enumerable; this is input/output isolation, not device hiding.
+No new kernel-mode SCX binary is installed. The Windows UMDF host/reflector is
+part of the trusted platform, and administrative code remains outside this
+isolation boundary.
+
+Release packages are explicit file allowlists with SHA-256 and byte lengths,
+bounded total size and a version/channel/platform declaration. The Setup EXE
+embeds the exact checked ZIP and validates its contents before protected staging.
+Stable builds require the complete Source Guard payload and matching DLL/INF
+versions. Removal uses journaled ownership and exact INF hashes, never a broad
+search for similarly named drivers. These checks provide consistency and safe
+scoping; a public checksum is not a substitute for publisher Authenticode signing.
+
 Please report security issues privately to **Tim Haller <tim.haller@gmail.com>**,
 or using GitHub private vulnerability reporting when enabled. Do not post exploitable details or private data in a
-public issue. An initial audit and live Windows validation are required before
-this development driver should be described as production ready.
+public issue. Review the current artifact-specific validation record before
+deployment; stable channel status does not imply an independent security audit,
+WHQL certification or an all-device/all-game compatibility guarantee.
 
