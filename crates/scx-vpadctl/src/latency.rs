@@ -3,6 +3,7 @@ use scx_vpad_protocol::{InputState, Profile, BUTTON_SOUTH};
 use std::time::{Duration, Instant};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+#[cfg(windows)]
 pub const HELP: &str = "scx-vpadctl benchmark-latency [--profiles generic,ds4,ds5] [--count 10000] [--rate 250] [--warmup 100] [--format text|json|csv] [--priority normal|above-normal] [--spin-us 0..50] [--legacy-barriers]\n  Creates 1..4 owned virtual HID devices and generates button/axis transitions. Close games first. Xbox is unsupported. Nonzero spin and legacy barriers require the latency-probe build feature and Sony-only profiles.";
 const WARMUP: u32 = 1 << 23;
 const MAX_COUNT: usize = 100_000;
@@ -88,11 +89,13 @@ impl Config {
         }
         Ok(c)
     }
+    #[cfg(windows)]
     fn period(&self) -> Duration {
         Duration::from_nanos(1_000_000_000 / u64::from(self.rate))
     }
 }
 
+#[cfg(windows)]
 fn profile_name(p: Profile) -> &'static str {
     match p {
         Profile::GenericHid => "generic",
@@ -211,6 +214,7 @@ struct Observations {
     background: usize,
     warmup: usize,
     highest: Option<usize>,
+    #[cfg(windows)]
     error: Option<String>,
 }
 impl Observations {
@@ -224,6 +228,7 @@ impl Observations {
             background: 0,
             warmup: 0,
             highest: None,
+            #[cfg(windows)]
             error: None,
         }
     }
