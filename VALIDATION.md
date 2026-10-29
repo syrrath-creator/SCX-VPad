@@ -1,3 +1,124 @@
+# Native .38 preview validation — 29 October 2026
+
+Qualification for **v0.1.1-preview.2 / native 0.1.0.38**. This section separates
+client experiments against installed .37 from tests on installed .38. Historical
+.37 and Stable evidence below remains labelled with its original revision.
+
+## Artifacts and installation
+
+- Installed `ScxVPad.dll` SHA-256:
+  `f0593ba55ed112c9b896a0340cc6196192bec8f92f2661f58641a29edadcd857`
+- Installed `ScxSource.dll` SHA-256:
+  `a09d4765942a952943785755a1aafc5416d9375b13f5fa805341de88ab66ddf26`
+
+The release's `SHA256SUMS.txt` identifies its final ZIP and Setup. Publication
+documentation was refreshed while retaining the validated driver/service/tool
+binaries. Package channel is `preview`; the Source Guard model set is unchanged
+from .37. Installation preserved the authorized
+Windows account and full 64-bit device-identity seed; the service was running
+and installed DLLs matched the checked package. No user SID, device instance
+path, private signing key or local diagnostic log is published here.
+
+## Client-only latency experiment — installed .37 held fixed
+
+Windows 11 Pro build 26300, Ryzen 7 7800X3D, high-performance power plan. The same
+instrumented executable ran all variants (SHA-256
+`54ed392afe6669e7bb0336ecd60143732fed442de835385fa359fc7af642ce1e`).
+There were three alternating-order runs per variant and workload, each with
+10,000 samples: **240,000 matched reports**, with no reported loss, duplicates,
+malformed samples or reordering. CPU load used eight normal-priority busy
+workers without affinity changes.
+
+Requested rate was 500 Hz; achieved rates were approximately 429–433 Hz idle and
+402–409 Hz under load. Cross-workload figures are therefore not equal-rate
+comparisons. Values below are microseconds: medians of **three per-run
+quantiles**, not pooled quantiles; the last column is the largest run maximum.
+
+| Workload | Client variant | HID p50 | HID p99 | HID p99.9 | Largest maximum |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Idle | Legacy payload barriers | 36.7 | 59.9 | 80.1 | 216.0 |
+| Idle | New payload barriers | 36.2 | 58.9 | 82.8 | 375.4 |
+| Idle | Above-normal producer | 36.9 | 60.3 | 78.3 | 285.2 |
+| Idle | 10 µs spin | 37.9 | 59.4 | 79.9 | 223.8 |
+| CPU load | Legacy payload barriers | 37.1 | 58.7 | 106.6 | 4253.8 |
+| CPU load | New payload barriers | 36.9 | 53.2 | 78.4 | 655.1 |
+| CPU load | Above-normal producer | 36.9 | 53.1 | 79.1 | 13283.5 |
+| CPU load | 10 µs spin | 37.1 | 54.7 | 90.9 | 19233.3 |
+
+The metric is submission start to the matching independent HID reader's return,
+including Windows/HID completion and observer scheduling. It can precede the
+producer's API acknowledgement. It does not measure physical input, Bluetooth,
+game polling or display latency. **No statistically established end-to-end
+latency win is claimed.** Priority and spin variants showed no consistent
+benefit that justified changing production defaults.
+
+An isolated 100-byte payload-store microbenchmark measured 40.06 versus 3.63 ns.
+It excludes ticket publication, events, driver and consumer work; that reduction
+is not an equivalent improvement in controller/game latency. Benchmark-process
+CPU included startup and excluded the UMDF host/service, so it is not an app or
+driver resource-usage comparison. Historical Store charts are not comparable to
+this synthetic measurement. [Methodology and commands](docs/latency-benchmark.md).
+
+Two additional four-device HID runs (DS4/DS5/wheel/flight and four Sony devices)
+provided another **80,000 matched reports** without integrity errors. These use
+one round-robin producer, not four independent mapping producers. Separate unit
+tests cover four simultaneous shared-memory channels, wraparound, stale events,
+payload integrity and completion/status association.
+
+## Installed .38 functional and security checks
+
+- Generic input and class profiles, Sony input, and Xbox feedback passed as an
+  ordinary Windows user. Restricted/low-integrity writer and capability tests
+  passed for generic, wheel, flight, arcade, DS4, DS5 and Xbox outputs.
+- Reconnect-aware four-controller tests passed for four DualSense devices;
+  DualSense/DS4/Xbox/wheel; and two DS4 plus two DualSense devices. All six early
+  and late consumers observed four independent identities and the expected
+  advancing input streams. Containers/identities remained stable; cleanup was
+  verified. The same reconnect-aware scenarios also passed on .37 with the new
+  client before installation.
+- The older test that starts GameInput after creating devices **without
+  reconnecting still failed**, observing one of four while HID/WGI saw four.
+  The unchanged .37 client reproduced this behavior. This is retained as a
+  known limitation, not relabelled a pass: late consumers may still need the
+  documented **Re-register controllers** operation. Windows is not patched.
+- The actual no_std Source Guard panic handler was linked into an isolated
+  child and exited with `STATUS_FAIL_FAST_EXCEPTION` (`0xC0000602`). No live
+  physical-device UMDF host was deliberately crashed. Transparent recovery
+  from such a host failure is not established.
+- The first physical Edge attempt found no reachable controller and timed out
+  cleanly after ten seconds. After waking it, the rebuilt SCX client forwarded
+  **9,606 reports in 20 seconds**, Edge Bluetooth → virtual DualSense, with no
+  reported input/output/haptic error and clean teardown. Source Guard was
+  requested; mouse AIM, telemetry and motor effects were off. A separate
+  unauthenticated reader received 40 physical reports after teardown. There
+  was no concurrent blocked-reader check or deliberate button/rumble
+  confirmation during this run.
+- Independent-HID smoke on installed .38 matched 1,000/1,000 reports and
+  produced valid JSON; a 100-row CSV smoke also passed. These check format and
+  integrity, not statistical A/B performance.
+
+## Build and regression checks
+
+- All-feature Rust workspace: 112 passed, 3 explicit opt-in skips. Default
+  package workspace: 111 passed, 2 skips. Isolated Rust source policy: 13 passed.
+- Strict Clippy, formatting, native ABI, `/W4 /WX /analyze`, three INF
+  validations and both catalog generations passed.
+- The publication source passed all-feature tests, formatting and strict Clippy.
+  CI also covers that optional feature and the isolated actual panic handler.
+- Setup: 46 checks; package validation: 23; recovery: 11; identity: 21.
+- Companion SCX input/output suites: 121 passed, 9 hardware/diagnostic skips.
+  The rebuilt companion app's self-test passed 150 checks, including 10,440
+  localized entries, assets, models and mappings; user profiles were unchanged.
+  This driver release does not distribute or submit that app to the Store.
+
+There was no new manual Tekken/Gears session, physical motor-response test,
+ViGEm comparison, physical-button-to-screen measurement or structural Source
+Guard hop comparison for .38. Disabling a lease does not remove the installed
+filter from the stack. HID descriptors, game mappings, controller containers
+and reconnect behavior are unchanged. The client optimization requires an
+application rebuilt against this SDK; the installer cannot replace an older
+app's embedded client. The release is a locally signed preview, not WHQL.
+
 # Source Guard .37 preview validation — 24 October 2026
 
 Windows 11 x64, ordinary-user test clients after one administrative installation.

@@ -27,6 +27,63 @@ pub fn supported_instance(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"&{}_-".contains(&b))
         && !model.to_ascii_uppercase().contains("&IG_")
 }
+/// Strict package-model syntax, distinct from a live device instance identity.
+/// USB revisions and collection suffixes must be retained to avoid accidentally
+/// matching virtual gamepads or unrelated collections. This is syntax only;
+/// callers must also verify the live physical ancestry and HID descriptor.
+pub fn package_source_model(model: &str) -> bool {
+    if model.len() > 240 || !model.is_ascii() {
+        return false;
+    }
+    let model = model.to_ascii_uppercase();
+    let Some(model) = model.strip_prefix("HID\\") else {
+        return false;
+    };
+    let hex = |value: &str, len| value.len() == len && value.bytes().all(|b| b.is_ascii_hexdigit());
+    let (suffix, usb) = if let Some(value) = model.strip_prefix("VID_") {
+        if value.len() < 13
+            || !hex(&value[..4], 4)
+            || &value[4..9] != "&PID_"
+            || !hex(&value[9..13], 4)
+        {
+            return false;
+        }
+        (&value[13..], true)
+    } else if let Some(value) = model.strip_prefix("{00001124-0000-1000-8000-00805F9B34FB}_VID&") {
+        if value.len() < 17
+            || !hex(&value[..8], 8)
+            || &value[8..13] != "_PID&"
+            || !hex(&value[13..17], 4)
+        {
+            return false;
+        }
+        (&value[17..], false)
+    } else {
+        return false;
+    };
+    let mut seen = 0u8;
+    if !suffix.is_empty() {
+        let Some(suffix) = suffix.strip_prefix('&') else {
+            return false;
+        };
+        for part in suffix.split('&') {
+            let flag = if part.strip_prefix("REV_").is_some_and(|s| hex(s, 4)) {
+                1
+            } else if part.strip_prefix("MI_").is_some_and(|s| hex(s, 2)) {
+                2
+            } else if part.strip_prefix("COL").is_some_and(|s| hex(s, 2)) {
+                4
+            } else {
+                return false;
+            };
+            if seen & flag != 0 {
+                return false;
+            }
+            seen |= flag;
+        }
+    }
+    !usb || seen & 1 != 0
+}
 /// Game-controller top-level collections only. Mouse, keyboard, consumer,
 /// digitizer and vendor-private interfaces cannot be reserved by this route.
 pub fn controller_collection(page: u16, usage: u16) -> bool {
@@ -76,6 +133,31 @@ pub fn decode_instance(b: &[u8]) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn package_models_are_exact_and_keep_usb_revision() {
+        for model in [
+            r"HID\VID_046D&PID_C24F&REV_0111&MI_00&COL01",
+            r"hid\vid_0810&pid_0001&rev_0100",
+            r"HID\{00001124-0000-1000-8000-00805F9B34FB}_VID&0002054C_PID&0DF2",
+        ] {
+            assert!(package_source_model(model), "{model}");
+        }
+        for model in [
+            "",
+            r"HID\VID_054C&PID_0DF2",
+            r"HID\VID_054C&PID_0DF2&REV_0100\SERIAL",
+            r"HID\VID_046D&PID_C24F&REV_0111&IG_00",
+            r"HID\VID_046D&PID_C24F&REV_0111&COL01&COL02",
+            r"HID_DEVICE_UP:0001_U:0005",
+            r"HID\*",
+            r"HID\VID_046D&PID_C24F&REV_0111&",
+            r"USB\VID_046D&PID_C24F&REV_0111",
+            r"HID\VID_046D&PID_C24F&REV_0111&MI_0",
+            "HID\\VID_046D&PID_C24F&REV_0111\0",
+        ] {
+            assert!(!package_source_model(model), "{model}");
+        }
+    }
     #[test]
     fn strict_source_only() {
         for id in [

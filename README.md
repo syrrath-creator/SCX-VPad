@@ -1,10 +1,18 @@
 # SCX VPad
 
-**v0.1.1-preview.1 · native revision 0.1.0.37 · Windows 11 x64**
+**v0.1.1-preview.2 · native revision 0.1.0.38 · Windows 11 x64**
 
-This preview expands Source Guard to qualified native HID input collections and
-Steam Controller 2026. The stable v0.1.0 / .35 release remains available.
-See [RELEASE-NOTES.md](RELEASE-NOTES.md) for exact coverage and requirements.
+This preview improves Source Guard's internal-panic handling, reduces redundant
+Sony client payload barriers and adds independently observed HID latency tooling.
+It retains the qualified native HID and Steam Controller 2026 coverage from .37.
+Read-only SDK discovery reports Source Guard preparation/status and validates
+exact model identifiers; it does not automatically install or authorize devices.
+The client optimization requires an application rebuilt with this SDK; installing
+the driver alone does not update the client inside an existing SCX Store app.
+No end-to-end latency win is claimed. The stable v0.1.0 / .35 release remains
+available. See [RELEASE-NOTES.md](RELEASE-NOTES.md) for scope and requirements,
+[VALIDATION.md](VALIDATION.md) for the measured results, and the
+[benchmark guide](docs/latency-benchmark.md) for reproducible methodology.
 
 Virtual Xbox 360, DualShock 4, DualSense and generic HID controllers for SCX.
 The driver core, source-authorization policy, client SDK and device-management
@@ -73,8 +81,8 @@ normal connections, disconnections and explicit reconnection do not elevate.
 
 ## Install
 
-Download **[SCX-VPad-0.1.0.37-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.1-preview.1/SCX-VPad-0.1.0.37-Setup-x64.exe)**
-from [the release](https://github.com/syrrath-creator/SCX-VPad/releases/tag/v0.1.1-preview.1).
+Download **[SCX-VPad-0.1.0.38-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.1-preview.2/SCX-VPad-0.1.0.38-Setup-x64.exe)**
+from [the release](https://github.com/syrrath-creator/SCX-VPad/releases/tag/v0.1.1-preview.2).
 Compare its checksum with `SHA256SUMS.txt`.
 
 1. Close SCX and games. Run Setup from the Windows account that will use SCX.
@@ -148,7 +156,7 @@ redistributed in the package.
 cargo fetch --locked
 ./scripts/fetch-wdk.ps1
 ./scripts/cargo.ps1 -CargoArgs @('test','--workspace','--locked','--offline')
-./scripts/build-package.ps1 -IncludeSourceGuard -SourceModelFile ./isolation/models-qualified.txt -ReleaseChannel preview -Destination ./dist/SCX-VPad-0.1.0.37-windows-x64
+./scripts/build-package.ps1 -IncludeSourceGuard -SourceModelFile ./isolation/models-qualified.txt -ReleaseChannel preview -Destination ./dist/SCX-VPad-0.1.0.38-windows-x64
 ```
 
 The stable package requires Source Guard and cannot skip tests. The build checks
@@ -161,8 +169,8 @@ drivers or services. Installed tests remain a separate release qualification.
 ZIP the package contents with `package-manifest.json` at archive root, then:
 
 ```powershell
-./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.37-windows-x64.zip -ExpectedSha256 $verifiedZipSha256 -OutputDirectory ./artifacts/setup37
-./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.37-windows-x64.zip -BuildDirectory ./artifacts/setup37
+./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.38-windows-x64.zip -ExpectedSha256 $verifiedZipSha256 -OutputDirectory ./artifacts/setup38
+./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.38-windows-x64.zip -BuildDirectory ./artifacts/setup38
 ```
 
 The Setup tests exercise the real package reader against modified archives;

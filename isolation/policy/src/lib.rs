@@ -160,7 +160,29 @@ pub unsafe extern "C" fn scx_source_allowed(
         p.allows(now, c)
     })
 }
-#[cfg(not(any(test, feature = "std")))]
+// Match the VPad core: an internal invariant failure must terminate the UMDF
+// host instead of leaving a request thread spinning indefinitely.
+#[cfg(all(not(any(test, feature = "std")), target_os = "windows"))]
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn RaiseFailFastException(
+            record: *const core::ffi::c_void,
+            context: *const core::ffi::c_void,
+            flags: u32,
+        );
+    }
+    // SAFETY: null record/context asks Windows to construct the exception.
+    unsafe {
+        RaiseFailFastException(core::ptr::null(), core::ptr::null(), 0);
+    }
+    // Windows does not return; retain a non-unwinding fallback if a hook does.
+    loop {
+        core::hint::spin_loop();
+    }
+}
+#[cfg(all(not(any(test, feature = "std")), not(target_os = "windows")))]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     loop {

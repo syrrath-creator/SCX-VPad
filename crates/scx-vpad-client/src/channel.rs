@@ -28,6 +28,10 @@ pub struct Channel {
     feedback: Handle,
     pub name: String,
     poisoned: bool,
+    #[cfg(feature = "latency-probe")]
+    spin_us: u32,
+    #[cfg(feature = "latency-probe")]
+    legacy_payload_barriers: bool,
 }
 // Mapped words are accessed atomically; each mutable producer is uniquely owned.
 unsafe impl Send for Channel {}
@@ -157,6 +161,10 @@ impl Channel {
             feedback,
             name,
             poisoned: false,
+            #[cfg(feature = "latency-probe")]
+            spin_us: 0,
+            #[cfg(feature = "latency-probe")]
+            legacy_payload_barriers: false,
         })
     }
     fn word(&self, offset: usize) -> &AtomicU32 {
@@ -175,6 +183,43 @@ impl Channel {
         }
         out
     }
+    /// Benchmarks may compare the old payload barriers and a bounded spin.
+    /// These controls are absent from ordinary release builds.
+    #[cfg(feature = "latency-probe")]
+    pub fn set_submit_tuning(
+        &mut self,
+        spin_us: u32,
+        legacy_payload_barriers: bool,
+    ) -> io::Result<()> {
+        if spin_us > 50 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "spin budget exceeds 50 us",
+            ));
+        }
+        self.spin_us = spin_us;
+        self.legacy_payload_barriers = legacy_payload_barriers;
+        Ok(())
+    }
+    fn store_packet(&self, packet: &[u8; 100]) {
+        let ordering = Ordering::Relaxed;
+        #[cfg(feature = "latency-probe")]
+        let ordering = if self.legacy_payload_barriers {
+            Ordering::SeqCst
+        } else {
+            ordering
+        };
+        // The completed-ticket check prevents the single producer from writing
+        // over an outstanding packet. Publishing ChannelTicket below is the
+        // release barrier; the native worker reads it with InterlockedCompareExchange
+        // before accessing these aligned atomic words. One publication orders all
+        // 25 stores, so a separate full barrier for each word is unnecessary.
+        // Keep the atomic words: even a hostile peer must not cause a data race.
+        for (n, chunk) in packet.as_chunks::<4>().0.iter().enumerate() {
+            self.word(64 + n * 4)
+                .store(u32::from_le_bytes(*chunk), ordering);
+        }
+    }
     pub fn submit(&mut self, capability: &Capability, state: &InputState) -> io::Result<()> {
         if self.poisoned || self.load(12) != 1 {
             return Err(fail("channel stopped or timed out; reconnect"));
@@ -188,15 +233,19 @@ impl Channel {
         packet[0] = 0x7a;
         packet[1..33].copy_from_slice(capability.bytes());
         packet[33..97].copy_from_slice(&state.encode());
-        for (n, chunk) in packet.as_chunks::<4>().0.iter().enumerate() {
-            self.word(64 + n * 4)
-                .store(u32::from_le_bytes(*chunk), Ordering::SeqCst);
-        }
+        self.store_packet(&packet);
         crate::wire::wipe(&mut packet);
         let ticket = previous.wrapping_add(1);
         self.word(16).store(ticket, Ordering::SeqCst);
         check(unsafe { SetEvent(self.input.0) })?;
         let until = Instant::now() + Duration::from_secs(2);
+        #[cfg(feature = "latency-probe")]
+        if self.spin_us != 0 {
+            let spin_until = Instant::now() + Duration::from_micros(self.spin_us.into());
+            while self.load(20) != ticket && self.load(12) == 1 && Instant::now() < spin_until {
+                std::hint::spin_loop();
+            }
+        }
         while self.load(20) != ticket {
             if self.load(12) != 1 {
                 self.poisoned = true;
@@ -287,6 +336,11 @@ impl Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use scx_vpad_protocol::{
+        TouchPoint, FLAG_ACCEL_VALID, FLAG_GYRO_VALID, FLAG_TOUCH_VALID, TOUCH_ACTIVE,
+    };
+    use std::sync::{Arc, Barrier};
+
     fn pair() -> (Channel, Channel) {
         let section = Handle::new(unsafe {
             CreateFileMappingW(
@@ -299,9 +353,14 @@ mod tests {
             )
         })
         .unwrap();
-        let input = Handle::event().unwrap();
-        let done = Handle::event().unwrap();
-        let feedback = Handle::event().unwrap();
+        // Match the auto-reset events created by the service. A manual-reset
+        // event remains signalled and can conceal missed wakeups in these tests.
+        let event = || {
+            Handle::new(unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) }).unwrap()
+        };
+        let input = event();
+        let done = event();
+        let feedback = event();
         let duplicate = |h: &Handle| {
             let mut copy = std::ptr::null_mut();
             check(unsafe {
@@ -335,6 +394,267 @@ mod tests {
                 .store(u32::from_le_bytes(*c), Ordering::SeqCst);
         }
         (writer, reader)
+    }
+
+    // This models the existing native driver's InterlockedCompareExchange(p,0,0),
+    // including its successful read/modify/write when the word contains zero.
+    // It checks the protocol on real Windows mappings, not the C compiler ABI.
+    fn native_read(channel: &Channel, offset: usize) -> u32 {
+        channel
+            .word(offset)
+            .compare_exchange(0, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .unwrap_or_else(|value| value)
+    }
+
+    fn synthetic_state(channel: u32, round: u32) -> InputState {
+        let value = round.wrapping_mul(0x9e37_79b9) ^ channel.wrapping_mul(0x85eb_ca6b);
+        let mut state = InputState {
+            sequence: round,
+            timestamp_us: ((channel as u64 + 1) << 56) | (value as u64) << 16 | round as u64,
+            ..InputState::NEUTRAL
+        };
+        // Every press is immediately followed by a complete neutral release.
+        // Presses vary all non-reserved fields, not just the sequence word.
+        if round & 1 == 0 {
+            state.buttons = (value & 0x7fff) | 1;
+            state.left_x = value as i16;
+            state.left_y = value.rotate_left(5) as i16;
+            state.right_x = value.rotate_left(11) as i16;
+            state.right_y = value.rotate_left(17) as i16;
+            state.left_trigger = value.rotate_left(3) as u16;
+            state.right_trigger = value.rotate_left(19) as u16;
+            state.hat = (value % 8) as u8;
+            state.flags = FLAG_GYRO_VALID | FLAG_ACCEL_VALID | FLAG_TOUCH_VALID;
+            state.gyro = [
+                value as i16,
+                value.rotate_left(7) as i16,
+                value.rotate_left(13) as i16,
+            ];
+            state.accel = [
+                value.rotate_left(2) as i16,
+                value.rotate_left(9) as i16,
+                value.rotate_left(23) as i16,
+            ];
+            state.touches = std::array::from_fn(|index| TouchPoint {
+                x: value.rotate_left(index as u32 * 7) as u16,
+                y: value.rotate_left(9 + index as u32 * 11) as u16,
+                id: ((round + channel + index as u32) % 128) as u8,
+                flags: TOUCH_ACTIVE,
+            });
+        }
+        state.validate().unwrap();
+        state
+    }
+
+    fn synthetic_capability(channel: u32) -> [u8; 32] {
+        std::array::from_fn(|index| {
+            (index as u8)
+                .wrapping_mul(7)
+                .wrapping_add(channel as u8 + 1)
+        })
+    }
+
+    fn synthetic_status(round: u32) -> u32 {
+        match round % 257 {
+            0 => ERROR_ACCESS_DENIED,
+            1 => ERROR_INVALID_PARAMETER,
+            _ => ERROR_SUCCESS,
+        }
+    }
+
+    #[test]
+    fn four_channels_preserve_every_packet_release_status_and_wrapped_ticket() {
+        const ROUNDS: u32 = 4096;
+        let start = Arc::new(Barrier::new(8));
+        std::thread::scope(|scope| {
+            for channel in 0..4 {
+                let (mut producer, consumer) = pair();
+                let initial = u32::MAX - channel * 17 - 3;
+                producer.word(16).store(initial, Ordering::SeqCst);
+                producer.word(20).store(initial, Ordering::SeqCst);
+                #[cfg(feature = "latency-probe")]
+                producer.set_submit_tuning(channel * 15, false).unwrap();
+                let consumer_start = Arc::clone(&start);
+                scope.spawn(move || {
+                    let mut completed = initial;
+                    consumer_start.wait();
+                    for round in 0..ROUNDS {
+                        let ticket = loop {
+                            assert_eq!(
+                                unsafe { WaitForSingleObject(consumer.input.0, 5000) },
+                                WAIT_OBJECT_0
+                            );
+                            let ticket = native_read(&consumer, 16);
+                            if ticket != completed {
+                                break ticket;
+                            }
+                        };
+                        assert_eq!(ticket, initial.wrapping_add(round + 1));
+                        let mut packet = [0u8; 100];
+                        for (word_index, bytes) in
+                            packet.as_chunks_mut::<4>().0.iter_mut().enumerate()
+                        {
+                            bytes.copy_from_slice(
+                                &native_read(&consumer, 64 + word_index * 4).to_le_bytes(),
+                            );
+                            if word_index == 12 && round % 257 == 0 {
+                                // Give the producer chances to run mid-copy; it
+                                // must still wait for this packet's completion.
+                                std::thread::yield_now();
+                            }
+                        }
+                        assert_eq!(packet[0], 0x7a);
+                        assert_eq!(packet[1..33], synthetic_capability(channel));
+                        let expected = synthetic_state(channel, round);
+                        assert_eq!(
+                            packet[33..97],
+                            expected.encode(),
+                            "channel {channel}, round {round}"
+                        );
+                        assert_eq!(packet[97..], [0; 3]);
+                        assert_eq!(
+                            InputState::decode(&packet[33..97]).unwrap().is_neutral(),
+                            round & 1 != 0
+                        );
+                        // Native InterlockedExchange publishes status before
+                        // completion. Consecutive error/success cases catch a
+                        // completion being paired with the previous status.
+                        consumer
+                            .word(24)
+                            .swap(synthetic_status(round), Ordering::SeqCst);
+                        completed = ticket;
+                        consumer.word(20).swap(completed, Ordering::SeqCst);
+                        check(unsafe { SetEvent(consumer.done.0) }).unwrap();
+                    }
+                });
+                let producer_start = Arc::clone(&start);
+                scope.spawn(move || {
+                    let capability = Capability::new(synthetic_capability(channel));
+                    producer_start.wait();
+                    for round in 0..ROUNDS {
+                        if round % 131 == 0 {
+                            // An event alone must never authorize completion.
+                            check(unsafe { SetEvent(producer.done.0) }).unwrap();
+                        }
+                        let result = producer.submit(&capability, &synthetic_state(channel, round));
+                        let expected = synthetic_status(round);
+                        if expected == ERROR_SUCCESS {
+                            result.unwrap();
+                        } else {
+                            assert_eq!(result.unwrap_err().raw_os_error(), Some(expected as i32));
+                        }
+                        assert_eq!(producer.load(20), initial.wrapping_add(round + 1));
+                        assert!(!producer.poisoned);
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
+    fn timed_out_packet_is_never_overwritten_even_after_a_late_acknowledgement() {
+        let (mut producer, consumer) = pair();
+        #[cfg(feature = "latency-probe")]
+        producer.set_submit_tuning(50, false).unwrap();
+        let capability = Capability::new(synthetic_capability(2));
+        assert_eq!(
+            producer
+                .submit(&capability, &synthetic_state(2, 0))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        assert!(producer.poisoned);
+        let packet = consumer.bytes::<100>(64);
+        let ticket = native_read(&consumer, 16);
+        assert_eq!(ticket, 1);
+        // A driver may finish a packet after the caller has already timed out.
+        consumer.word(20).swap(ticket, Ordering::SeqCst);
+        check(unsafe { SetEvent(consumer.done.0) }).unwrap();
+        assert!(producer
+            .submit(&capability, &synthetic_state(2, 1))
+            .is_err());
+        assert_eq!(consumer.bytes::<100>(64), packet);
+        assert_eq!(native_read(&consumer, 16), ticket);
+    }
+
+    #[test]
+    fn disconnect_during_a_pending_submit_poisoned_the_channel_without_overwriting() {
+        let (mut producer, consumer) = pair();
+        let worker = std::thread::spawn(move || {
+            assert_eq!(
+                unsafe { WaitForSingleObject(consumer.input.0, 5000) },
+                WAIT_OBJECT_0
+            );
+            let packet = consumer.bytes::<100>(64);
+            consumer.word(12).swap(0, Ordering::SeqCst);
+            check(unsafe { SetEvent(consumer.done.0) }).unwrap();
+            (consumer, packet)
+        });
+        assert!(producer
+            .submit(&Capability::default(), &synthetic_state(1, 0))
+            .is_err());
+        assert!(producer.poisoned);
+        let (consumer, packet) = worker.join().unwrap();
+        assert!(producer
+            .submit(&Capability::default(), &synthetic_state(1, 1))
+            .is_err());
+        assert_eq!(consumer.bytes::<100>(64), packet);
+        assert_eq!(native_read(&consumer, 16), 1);
+    }
+
+    #[cfg(feature = "latency-probe")]
+    #[test]
+    fn submit_spin_budget_is_opt_in_and_bounded() {
+        let (mut channel, _) = pair();
+        assert_eq!(channel.spin_us, 0);
+        assert!(!channel.legacy_payload_barriers);
+        channel.set_submit_tuning(50, true).unwrap();
+        assert_eq!(
+            channel.set_submit_tuning(51, false).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(channel.spin_us, 50);
+        assert!(channel.legacy_payload_barriers);
+    }
+
+    #[cfg(feature = "latency-probe")]
+    #[test]
+    #[ignore = "release-mode diagnostic: payload stores only, not driver or input latency"]
+    fn payload_store_microbenchmark() {
+        use std::hint::black_box;
+        const ITERATIONS: usize = 200_000;
+        let (mut channel, observer) = pair();
+        let packets: [[u8; 100]; 64] = std::array::from_fn(|packet| {
+            std::array::from_fn(|byte| (packet as u8).wrapping_mul(11).wrapping_add(byte as u8))
+        });
+        let mut timings = [Vec::new(), Vec::new()];
+        for sample in 0..8 {
+            // Alternate order to limit systematic warmup/frequency bias.
+            for mode in [sample % 2, 1 - sample % 2] {
+                channel.set_submit_tuning(0, mode == 0).unwrap();
+                for iteration in 0..16_384 {
+                    channel.store_packet(black_box(&packets[iteration % packets.len()]));
+                }
+                let begin = Instant::now();
+                for iteration in 0..ITERATIONS {
+                    channel.store_packet(black_box(&packets[iteration % packets.len()]));
+                }
+                let ns_per_packet = begin.elapsed().as_nanos() as f64 / ITERATIONS as f64;
+                assert_eq!(
+                    observer.bytes::<100>(64),
+                    packets[(ITERATIONS - 1) % packets.len()]
+                );
+                timings[mode].push(ns_per_packet);
+            }
+        }
+        for (label, samples) in ["legacy SeqCst", "Relaxed payload"]
+            .into_iter()
+            .zip(&mut timings)
+        {
+            samples.sort_by(f64::total_cmp);
+            println!("{label}: median {:.2} ns / 100-byte store, min {:.2} ns (8 x {ITERATIONS}; payload only; no ticket, event, driver, or end-to-end latency)", (samples[3] + samples[4]) / 2.0, samples[0]);
+        }
     }
     #[test]
     fn feedback_timeout_does_not_consume_next_change_and_disconnect_wakes_reader() {

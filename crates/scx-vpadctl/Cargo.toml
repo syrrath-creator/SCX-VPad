@@ -4,12 +4,15 @@ version.workspace = true
 edition.workspace = true
 license-file = "../../LICENSE"
 
+[features]
+latency-probe = ["scx-vpad-client/latency-probe"]
+
 [dependencies]
 scx-vpad-client = { path = "../scx-vpad-client" }
 scx-vpad-protocol = { path = "../scx-vpad-protocol" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Input_XboxController"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_XboxController", "Win32_System_Console", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]
 scx-vpad-core = { path = "../scx-vpad-core" }

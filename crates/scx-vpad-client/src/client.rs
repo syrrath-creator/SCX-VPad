@@ -474,6 +474,23 @@ impl VirtualPad {
             submit_authenticated(&self.device, &self.capability, &state)
         }
     }
+    /// Opt-in benchmark controls, unavailable in ordinary SDK builds. The
+    /// native protocol, validation and acknowledgement semantics are unchanged.
+    #[cfg(feature = "latency-probe")]
+    pub fn set_submit_tuning(
+        &mut self,
+        spin_us: u32,
+        legacy_payload_barriers: bool,
+    ) -> io::Result<()> {
+        match self.channel.as_mut() {
+            Some(channel) => channel.set_submit_tuning(spin_us, legacy_payload_barriers),
+            None if spin_us == 0 && !legacy_payload_barriers => Ok(()),
+            None => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "submit tuning requires a Sony channel",
+            )),
+        }
+    }
     fn submit_exact(&mut self, capability: &Capability, state: &InputState) -> io::Result<()> {
         if let Some(c) = &mut self.channel {
             c.submit(capability, state)

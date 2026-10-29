@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license-file = "../../LICENSE"
 
+[features]
+# Opt-in benchmark controls only; normal SCX builds never spin on completion.
+latency-probe = []
+
 [dependencies]
 scx-vpad-protocol = { path = "../scx-vpad-protocol" }
 

@@ -44,6 +44,7 @@ $files = [ordered]@{
     'crates/scx-vpad-client/examples/xbox_press.rs' = 'crates/scx-vpad-client/examples/xbox_press.rs'
     'VALIDATION.md' = 'VALIDATION.md'
     'RELEASE-NOTES.md' = 'RELEASE-NOTES.md'
+    'docs/latency-benchmark.md' = 'docs/latency-benchmark.md'
     'crates/scx-vpad-core/PROVENANCE.md' = 'crates/scx-vpad-core/PROVENANCE.md'
     'crates/scx-vpad-core/XUSB-CONTRACT.md' = 'crates/scx-vpad-core/XUSB-CONTRACT.md'
     'driver/README.md' = 'driver/README.md'

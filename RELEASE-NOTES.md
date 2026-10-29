@@ -1,3 +1,58 @@
+# SCX VPad v0.1.1-preview.2 — native revision 0.1.0.38
+
+This preview contains a targeted Source Guard stability change, a Sony client
+optimization and new latency diagnostics. The qualified physical model set,
+virtual HID descriptors, controller containers, mappings, authorization and
+explicit GameInput reconnect behavior remain unchanged.
+
+- The Windows no_std Source Guard policy terminates on an internal panic with
+  `RaiseFailFastException` instead of spinning indefinitely in its UMDF host.
+  An isolated child process exercised the actual handler. This is not a claim
+  of transparent recovery from a real physical-device host failure.
+- Sony shared-memory submission uses relaxed atomic payload stores followed by
+  the existing ordered ticket publication. One packet remains outstanding at
+  a time; acknowledgement, authentication, backpressure, input transitions and
+  timeout poisoning remain intact. **This SDK optimization needs a rebuilt SCX
+  executable. Installing .38 alone does not change an existing Store app's
+  embedded client.** The channel protocol remains compatible with .37.
+- `benchmark-latency` measures submit-to-API acknowledgement separately from
+  submit-to-matching HID read return. It reports p50/p95/p99/p99.9/max, achieved
+  rate and integrity counters in JSON or CSV. Optional legacy-barrier and
+  bounded-spin comparisons require the `latency-probe` build feature; normal
+  application builds do not enable them. See the
+  [benchmark guide](docs/latency-benchmark.md).
+- The SDK adds read-only Source Guard preparation/status discovery and strict
+  exact hardware-model syntax, retaining USB revision qualifiers. Discovery
+  does not automatically install a filter or authorize a device. Runtime
+  protocol and authorization behavior are unchanged.
+- Production remains event-based with no spin phase. Driver-worker priority,
+  process priority, affinity and global timer resolution are unchanged. The
+  experiments did not establish a consistent benefit from raising priority or
+  adding spinning, so neither became a new default.
+
+The client-only A/B used installed .37 throughout: 240,000 matched reports,
+plus 80,000 reports in four-device integrity runs. Installed .38 then passed
+input, feedback, access-boundary and reconnect-aware four-controller checks.
+The physical Edge follow-up forwarded 9,606 reports over 20 seconds. Full scope,
+rates, failures and measurement limits are in [VALIDATION.md](VALIDATION.md).
+**No statistically established end-to-end latency improvement is claimed.**
+CI also checks the optional latency feature and the isolated actual Windows
+policy panic handler, alongside the existing default builds and native checks.
+
+The known late-start GameInput discovery limitation still requires the explicit
+reconnect workaround. There was no new manual Tekken/Gears or physical rumble
+session for .38. Historical compatibility tests below retain their original
+revision labels. Source Guard coverage remains limited to the qualified models
+and compatible native acquisition paths; it is not a universal device filter.
+
+Use `SCX-VPad-0.1.0.38-Setup-x64.exe` for normal installation/update, or the
+matching Windows x64 ZIP for manual installation. Close SCX and games first;
+Setup requests administrator approval for installation, while normal controller
+connections stay unelevated. Verify downloads against `SHA256SUMS.txt`.
+This remains a locally signed preview, not WHQL certification or a universal
+game/anti-cheat compatibility guarantee. The Setup EXE has no publicly trusted
+publisher signature. The stable v0.1.0 / .35 release remains available.
+
 # SCX VPad v0.1.1-preview.1 — native revision 0.1.0.37
 
 Source Guard now supports model-independent validation for native HID gamepad,

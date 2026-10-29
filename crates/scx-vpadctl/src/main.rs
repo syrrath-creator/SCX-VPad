@@ -1,3 +1,5 @@
+#[cfg(any(windows, test))]
+mod latency;
 #[cfg(windows)]
 mod verify;
 #[cfg(windows)]
@@ -23,6 +25,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("benchmark-latency") => latency::run(&args[1..])?,
         Some("probe-hid-routing") if args.len() == 1 => {
             for (game, zero) in [(false, true), (true, true), (true, false)] {
                 let pad = VirtualPad::create()?;
@@ -147,15 +150,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             samples.sort_unstable();
             println!("Neutral-report API completion only; not hardware/controller-to-game latency. One device, direct synchronous driver submission, {count} samples.");
             println!(
-                "p50={:.3} us p95={:.3} us p99={:.3} us max={:.3} us total={:.3} s",
+                "p50={:.3} us p95={:.3} us p99={:.3} us p99.9={:.3} us max={:.3} us total={:.3} s",
                 samples[count / 2] as f64 / 1000.0,
                 samples[(count - 1) * 95 / 100] as f64 / 1000.0,
                 samples[(count - 1) * 99 / 100] as f64 / 1000.0,
+                samples[(count - 1) * 999 / 1000] as f64 / 1000.0,
                 samples[count - 1] as f64 / 1000.0,
                 elapsed.as_secs_f64()
             );
         }
         _ => {
+            println!("{}", latency::HELP);
             println!("scx-vpadctl status\nscx-vpadctl create [seconds 1..3600] [controllers 1..4] [generic|wheel|flight|arcade|ds4|ds5|xbox]\nscx-vpadctl demo [seconds] [controllers] [generic|wheel|flight|arcade|ds4|ds5|xbox]\nscx-vpadctl stream [generic|wheel|flight|arcade|ds4|ds5|xbox]\nscx-vpadctl self-test\nscx-vpadctl self-test-generic-classes\nscx-vpadctl self-test-sony\nscx-vpadctl self-test-sony-multi <wgi_probe.exe> <gameinput3_probe.exe> <GameInputRedist.dll>\nscx-vpadctl self-test-xbox-feedback\nscx-vpadctl security-check [generic|wheel|flight|arcade|ds4|ds5|xbox]\nscx-vpadctl benchmark [samples 100..1000000] [generic|wheel|flight|arcade|ds4|ds5|xbox]\nscx-vpadctl benchmark-hid [samples 100..100000]\n\nDS4/DS5 and Xbox are experimental. The service and locally signed UMDF2 driver must be installed once by an administrator. Normal commands never elevate. Demo, self-tests and benchmark-hid generate actual button/stick input; close games first.");
         }
     }

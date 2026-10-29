@@ -18,7 +18,9 @@ jobs:
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
+      - run: cargo test --workspace --all-features --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Verify isolated Rust Source Guard policy
         run: |
           cargo fmt --manifest-path isolation/policy/Cargo.toml -- --check
@@ -63,6 +65,9 @@ jobs:
           $digest = (Get-FileHash ./artifacts/package.zip -Algorithm SHA256).Hash
           ./scripts/build-setup.ps1 -PackageZip ./artifacts/package.zip -ExpectedSha256 $digest -OutputDirectory ./artifacts/setup
           ./scripts/test-setup.ps1 -PackageZip ./artifacts/package.zip -BuildDirectory ./artifacts/setup
+      - name: Verify actual Source Guard fail-fast handler in isolated child
+        shell: pwsh
+        run: ./isolation/policy/Test-Panic.ps1
       - name: Build independent Windows Gaming Input diagnostic
         shell: pwsh
         run: ./scripts/build-wgi-probe.ps1

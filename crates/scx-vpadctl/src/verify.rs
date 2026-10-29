@@ -207,10 +207,11 @@ pub fn benchmark(count: usize) -> Result<()> {
     samples.sort_unstable();
     println!("Direct SCX submit -> Windows HID consumer completion, same process, {count} samples. Includes user scheduling/HID stack; excludes physical input, game and display. This is not a comparison with other drivers.");
     println!(
-        "p50={:.3} us p95={:.3} us p99={:.3} us max={:.3} us",
+        "p50={:.3} us p95={:.3} us p99={:.3} us p99.9={:.3} us max={:.3} us",
         samples[count / 2] as f64 / 1000.0,
         samples[(count - 1) * 95 / 100] as f64 / 1000.0,
         samples[(count - 1) * 99 / 100] as f64 / 1000.0,
+        samples[(count - 1) * 999 / 1000] as f64 / 1000.0,
         samples[count - 1] as f64 / 1000.0
     );
     Ok(())

@@ -239,6 +239,122 @@ fn verify_physical_source(instance: &str) -> io::Result<()> {
         .ok_or_else(|| fail("physical HID collection disappeared"))?;
     qualified_collection(&path)
 }
+fn package_model(instance: &str) -> io::Result<Option<String>> {
+    let mut id = wide(instance);
+    let mut node = 0;
+    if unsafe { CM_Locate_DevNodeW(&mut node, id.as_mut_ptr(), 0) } != CR_SUCCESS {
+        return Err(fail(
+            "source collection disappeared while reading its model",
+        ));
+    }
+    let mut buffer = [0u16; 4096];
+    let mut size = size_of_val(&buffer) as u32;
+    let mut kind = 0;
+    if unsafe {
+        CM_Get_DevNode_Registry_PropertyW(
+            node,
+            CM_DRP_HARDWAREID,
+            &mut kind,
+            buffer.as_mut_ptr().cast(),
+            &mut size,
+            0,
+        )
+    } != CR_SUCCESS
+        || kind != 7
+        || size < 4
+        || size as usize > size_of_val(&buffer)
+        || !size.is_multiple_of(2)
+    {
+        return Err(fail("invalid source hardware ID property"));
+    }
+    let data = &buffer[..size as usize / 2];
+    if data[data.len() - 2..] != [0, 0] {
+        return Err(fail("unterminated source hardware ID property"));
+    }
+    // The most-specific actual hardware ID retains MI/COL/REV. Never use
+    // reserved HID_DEVICE_* or a manufacturer-wide/wildcard match.
+    let end = data.iter().position(|c| *c == 0).unwrap_or(0);
+    if let Ok(model) = String::from_utf16(&data[..end]) {
+        let model = model.to_ascii_uppercase();
+        if package_source_model(&model) {
+            return Ok(Some(model));
+        }
+    }
+    Ok(None)
+}
+
+/// Read-only readiness of an eligible physical controller collection. Even an
+/// installed filter does not prove protection: only a live SourceGuard lease and
+/// authorized input handles do. A new exact model needs one-time driver setup;
+/// the ordinary connection path never changes the system driver installation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceGuardAvailability {
+    FilterInstalled,
+    NeedsInstallation,
+    ModelNotPackageable,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceGuardPreparation {
+    pub availability: SourceGuardAvailability,
+    /// Exact hardware model only, with no device instance or serial number.
+    pub model: Option<String>,
+}
+fn preparation(instance: &str, filters: &[(String, String)]) -> io::Result<SourceGuardPreparation> {
+    let model = package_model(instance)?;
+    let availability = if let Some((path, _)) = filters
+        .iter()
+        .find(|(_, id)| id.eq_ignore_ascii_case(instance))
+    {
+        drop(verify_source_path(path)?);
+        SourceGuardAvailability::FilterInstalled
+    } else if model.is_some() {
+        SourceGuardAvailability::NeedsInstallation
+    } else {
+        SourceGuardAvailability::ModelNotPackageable
+    };
+    Ok(SourceGuardPreparation {
+        availability,
+        model,
+    })
+}
+/// Inspect one exact HID collection without reserving it or changing any
+/// configuration. Keyboard, mouse, consumer, XInput-wrapper and virtual-device
+/// paths are rejected using the same live checks as lease acquisition.
+pub fn prepare_source_guard(hid_path: &str) -> io::Result<SourceGuardPreparation> {
+    let (path, instance) = endpoints(&HID)?
+        .into_iter()
+        .find(|(path, _)| path.eq_ignore_ascii_case(hid_path))
+        .ok_or_else(|| fail("physical HID source disappeared"))?;
+    if !supported_instance(&instance) || !physical_instance(&instance) {
+        return Err(fail(
+            "source is not a physical USB/Bluetooth HID controller",
+        ));
+    }
+    qualified_collection(&path)?;
+    preparation(&instance, &endpoints(&FILTER)?)
+}
+/// Verified controller inventory for a device-specific setup package. Output
+/// contains only exact model IDs and readiness, never instance IDs or serials.
+/// No driver staging, service changes, or isolation lease are performed.
+pub fn discover_source_preparations() -> io::Result<Vec<SourceGuardPreparation>> {
+    let filters = endpoints(&FILTER)?;
+    let mut result = Vec::new();
+    for (path, instance) in endpoints(&HID)? {
+        if !supported_instance(&instance)
+            || !physical_instance(&instance)
+            || qualified_collection(&path).is_err()
+        {
+            continue;
+        }
+        result.push(preparation(&instance, &filters)?);
+        if result.len() > 512 {
+            return Err(fail("too many source controller collections"));
+        }
+    }
+    result.sort_by(|a, b| a.model.cmp(&b.model));
+    result.dedup();
+    Ok(result)
+}
 /// Read-only discovery of exact hardware IDs suitable for a device-specific
 /// Source Guard package. No instance IDs, serial numbers or file paths escape.
 /// This does not stage/install filters or grant an isolation lease.
@@ -251,43 +367,11 @@ pub fn discover_source_models() -> io::Result<Vec<String>> {
         {
             continue;
         }
-        let mut id = wide(&instance);
-        let mut node = 0;
-        if unsafe { CM_Locate_DevNodeW(&mut node, id.as_mut_ptr(), 0) } != CR_SUCCESS {
-            continue;
+        if let Ok(Some(model)) = package_model(&instance) {
+            models.insert(model);
         }
-        let mut buffer = [0u16; 4096];
-        let mut size = size_of_val(&buffer) as u32;
-        let mut kind = 0;
-        if unsafe {
-            CM_Get_DevNode_Registry_PropertyW(
-                node,
-                CM_DRP_HARDWAREID,
-                &mut kind,
-                buffer.as_mut_ptr().cast(),
-                &mut size,
-                0,
-            )
-        } != CR_SUCCESS
-            || kind != 7
-            || size < 4
-            || size as usize > size_of_val(&buffer)
-            || !size.is_multiple_of(2)
-        {
-            continue;
-        }
-        let data = &buffer[..size as usize / 2];
-        if data[data.len() - 2..] != [0, 0] {
-            continue;
-        }
-        // The most-specific actual hardware ID retains MI/COL/REV. Never use
-        // reserved HID_DEVICE_* or a manufacturer-wide/wildcard match.
-        let end = data.iter().position(|c| *c == 0).unwrap_or(0);
-        if let Ok(model) = String::from_utf16(&data[..end]) {
-            let model = model.to_ascii_uppercase();
-            if supported_instance(&format!("{model}\\PROBE")) {
-                models.insert(model);
-            }
+        if models.len() > 512 {
+            return Err(fail("too many source models"));
         }
     }
     Ok(models.into_iter().collect())
