@@ -29,6 +29,18 @@ The service and Source Guard filter must be updated together. SCX Store app
 and is not bundled in this driver release. Existing GameInput late-discovery
 limitations and the explicit re-register workaround remain documented below.
 
+### Acknowledgements and provenance clarification — 9 November 2026
+
+Thank you to HIDMaestro author [@hifihedgehog](https://github.com/hifihedgehog)
+for the Sony-profile clarification and the offer to help investigate Tekken in
+[issue #1](https://github.com/syrrath-creator/SCX-VPad/issues/1). Comparison with
+HIDMaestro v2.1.0 confirmed that the descriptors and existing entries in
+`dualsense.json` and `dualshock-4-v2.json` are unchanged from SCX's cited source
+revision. [PROVENANCE.md](crates/scx-vpad-core/PROVENANCE.md) now records this
+precisely, including the additional upstream runtime metadata. This is a
+documentation clarification; the shipped descriptors and MIT attribution are
+unchanged.
+
 ## Previous v0.1.1-preview.2 — native revision 0.1.0.38
 
 This preview contains a targeted Source Guard stability change, a Sony client

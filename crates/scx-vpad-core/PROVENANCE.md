@@ -9,6 +9,22 @@ The full license is retained in licenses/HIDMaestro-MIT.txt. These are USB
 compatibility metadata, not executable or flashable Sony firmware. The tables
 remain MIT-licensed and are excluded from SCX's own redistribution restriction.
 
+### Upstream clarification — 9 November 2026
+
+Thanks to HIDMaestro author [@hifihedgehog](https://github.com/hifihedgehog)
+for the clarification in [issue #1](https://github.com/syrrath-creator/SCX-VPad/issues/1).
+The descriptors and all previously present profile entries in the two Sony JSON
+files above are unchanged in [HIDMaestro v2.1.0](https://github.com/hifihedgehog/HIDMaestro/tree/c28c1f640d89038154b0962ae01627e0cda37cb0)
+compared with SCX's pinned revision. That pin is the direct successor of
+v1.11.0 (a7135c195a23c553dada118d7b080f1d592090d8); both profile files at the
+pin are identical to their v1.11.0 versions.
+
+The complete JSON files in v2.1.0 are not identical: they additionally declare
+`deviceModelFrom` and `stream` metadata. Those additions describe HIDMaestro
+runtime behavior and are not claimed as SCX features. No descriptor or existing
+profile-entry replacement was needed. The original import revision and the
+MIT attribution above remain the source of the incorporated tables.
+
 The generic descriptor implements the USB HID 1.11 item format and Generic
 Desktop/Button usages: <https://www.usb.org/document-library/device-class-definition-hid-111>.
 The additional SCX vendor collection and binary transport are original designs.
