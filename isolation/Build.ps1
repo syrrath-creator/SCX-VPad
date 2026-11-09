@@ -8,18 +8,23 @@ $manifest=Join-Path $PSScriptRoot 'policy/Cargo.toml'
 & (Join-Path $repo 'scripts/cargo.ps1') -CargoArgs @('build','--manifest-path',$manifest,'--offline','--release','--no-default-features')
 $out=Join-Path $PSScriptRoot 'build'
 New-Item -ItemType Directory -Path $out -Force|Out-Null
-$includes=@((Join-Path $repo 'include'),(Join-Path $kit.WdkRoot 'Include/wdf/umdf/2.25'),(Join-Path $kit.MsvcRoot 'include'))
+# UMDF 2.33 publishes IO_SECURITY_CONTEXT for supported Create access checks.
+# It is inbox on the package's existing Windows 11 minimum target.
+$sourceWdf = '2.33'
+$sourceWdfLibrary = Join-Path $kit.WdkRoot "Lib/wdf/umdf/x64/$sourceWdf/WdfDriverStubUm.lib"
+if (-not (Test-Path -LiteralPath $sourceWdfLibrary)) { throw 'UMDF 2.33 build library is required for Source Guard.' }
+$includes=@((Join-Path $repo 'include'),(Join-Path $kit.WdkRoot "Include/wdf/umdf/$sourceWdf"),(Join-Path $kit.MsvcRoot 'include'))
 foreach($part in @('ucrt','um','shared')){$includes+=Join-Path $kit.SdkRoot "Include/$($kit.SdkVersion)/$part"}
 foreach($part in @('shared','um','km')){$includes+=Join-Path $kit.WdkRoot "Include/$($kit.SdkVersion)/$part"}
 $libs=@((Join-Path $kit.MsvcRoot 'lib/x64'),(Join-Path $kit.SdkRoot "Lib/$($kit.SdkVersion)/ucrt/x64"),(Join-Path $kit.SdkRoot "Lib/$($kit.SdkVersion)/um/x64"))
 $object=Join-Path $out 'scxsource.obj'
-$args=@('/nologo','/c','/TC','/std:c17','/O2','/MT','/GS','/guard:cf','/analyze','/analyze:external-','/W4','/WX','/DWIN32_LEAN_AND_MEAN','/DUNICODE','/D_UNICODE','/DUMDF_VERSION_MAJOR=2','/DUMDF_VERSION_MINOR=25','/DUMDF_USING_NTSTATUS',"/Fo$object",(Join-Path $PSScriptRoot 'native/scxsource.c'))+@($includes|ForEach-Object{"/I$_"})
+$args=@('/nologo','/c','/TC','/std:c17','/O2','/MT','/GS','/guard:cf','/analyze','/analyze:external-','/W4','/WX','/DWIN32_LEAN_AND_MEAN','/DUNICODE','/D_UNICODE','/DUMDF_VERSION_MAJOR=2','/DUMDF_VERSION_MINOR=33','/DUMDF_USING_NTSTATUS',"/Fo$object",(Join-Path $PSScriptRoot 'native/scxsource.c'))+@($includes|ForEach-Object{"/I$_"})
 & $kit.Cl @args
 if($LASTEXITCODE){throw 'Source-filter compilation failed'}
 $resource=Join-Path $out 'ScxSource.res'
 & $kit.Rc /nologo "/fo$resource" @($includes|ForEach-Object{"/I$_"}) (Join-Path $PSScriptRoot 'native/ScxSource.rc')
 if($LASTEXITCODE){throw 'Source-filter version resource failed'}
-$args=@('/nologo','/WX','/DLL','/MACHINE:X64','/SUBSYSTEM:WINDOWS,10.00','/DYNAMICBASE','/NXCOMPAT','/HIGHENTROPYVA','/guard:cf','/CETCOMPAT','/OPT:REF','/OPT:ICF','/INCREMENTAL:NO','/Brepro',('/DEF:'+(Join-Path $PSScriptRoot 'native/ScxSource.def')),('/OUT:'+(Join-Path $out 'ScxSource.dll')),$object,(Join-Path $PSScriptRoot 'policy/target/release/scx_source_policy.lib'),$kit.WdfLibrary,'kernel32.lib','ntdll.lib','advapi32.lib','bcrypt.lib')+@($libs|ForEach-Object{"/LIBPATH:$_"})
+$args=@('/nologo','/WX','/DLL','/MACHINE:X64','/SUBSYSTEM:WINDOWS,10.00','/DYNAMICBASE','/NXCOMPAT','/HIGHENTROPYVA','/guard:cf','/CETCOMPAT','/OPT:REF','/OPT:ICF','/INCREMENTAL:NO','/Brepro',('/DEF:'+(Join-Path $PSScriptRoot 'native/ScxSource.def')),('/OUT:'+(Join-Path $out 'ScxSource.dll')),$object,(Join-Path $PSScriptRoot 'policy/target/release/scx_source_policy.lib'),$sourceWdfLibrary,'kernel32.lib','ntdll.lib','advapi32.lib','bcrypt.lib')+@($libs|ForEach-Object{"/LIBPATH:$_"})
 & $kit.Link @args $resource
 if($LASTEXITCODE){throw 'Source-filter linking failed'}
 . (Join-Path $PSScriptRoot 'SourceModels.ps1')

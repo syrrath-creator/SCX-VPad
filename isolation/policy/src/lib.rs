@@ -1,9 +1,13 @@
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 //! Bounded source leases, authenticated per open HID handle. Only the service
-//! writes protected policy. No PID trust, allocation, I/O or WDF dependency.
+//! writes protected policy. PIDs admit opens only, never report access.
+//! No allocation, I/O or WDF dependency.
 pub const FRAME_SIZE: usize = 64;
 pub const MAX_TTL_MS: u64 = 3000;
 pub const CAPABILITY_SIZE: usize = 32;
+// FILE_READ/WRITE/APPEND_DATA, GENERIC_READ/WRITE/ALL and MAXIMUM_ALLOWED. Metadata
+// handles remain enumerable; admitting an open never authorizes report I/O.
+const DATA_ACCESS: u32 = 0xd200_0007;
 fn game_collection_id(id: &[u16]) -> bool {
     let template = b"HID_DEVICE_UP:0000_U:0000";
     if id.len() != template.len() {
@@ -71,30 +75,41 @@ pub struct Policy {
     pub lease: u64,
     pub deadline: u64,
     pub capability: [u8; CAPABILITY_SIZE],
+    pub owner_pid: u32,
 }
 impl Policy {
     pub fn decode(b: &[u8], now: u64) -> Option<Self> {
-        if b.len() != FRAME_SIZE
-            || &b[..4] != b"SCXS"
-            || b[4..8] != 2u32.to_le_bytes()
-            || b[56..64] != [0; 8]
-        {
+        if b.len() != FRAME_SIZE || &b[..4] != b"SCXS" {
             return None;
         }
+        let version = u32::from_le_bytes(b[4..8].try_into().ok()?);
+        let owner_pid = match version {
+            2 if b[56..64] == [0; 8] => 0,
+            3 if b[60..64] == [0; 4] => {
+                let pid = u32::from_le_bytes(b[56..60].try_into().ok()?);
+                if pid == 0 {
+                    return None;
+                }
+                pid
+            }
+            _ => return None,
+        };
         let p = Self {
             lease: u64::from_le_bytes(b[8..16].try_into().ok()?),
             deadline: u64::from_le_bytes(b[16..24].try_into().ok()?),
             capability: b[24..56].try_into().ok()?,
+            owner_pid,
         };
         p.active(now).then_some(p)
     }
     pub fn encode(&self) -> [u8; FRAME_SIZE] {
         let mut b = [0; FRAME_SIZE];
         b[..4].copy_from_slice(b"SCXS");
-        b[4..8].copy_from_slice(&2u32.to_le_bytes());
+        b[4..8].copy_from_slice(&3u32.to_le_bytes());
         b[8..16].copy_from_slice(&self.lease.to_le_bytes());
         b[16..24].copy_from_slice(&self.deadline.to_le_bytes());
         b[24..56].copy_from_slice(&self.capability);
+        b[56..60].copy_from_slice(&self.owner_pid.to_le_bytes());
         b
     }
     pub fn active(&self, now: u64) -> bool {
@@ -114,6 +129,29 @@ impl Policy {
     pub fn allows(&self, now: u64, candidate: &[u8; 32]) -> bool {
         !self.active(now) || self.authenticates(now, candidate)
     }
+    /// Only the service-authenticated, pinned process may open data handles
+    /// during a lease. It must still authenticate each handle for report I/O.
+    /// Legacy v2 policies retain I/O isolation but admit no new data opens.
+    pub fn allows_open(&self, now: u64, requestor_pid: u32, desired_access: u32) -> bool {
+        desired_access & DATA_ACCESS == 0
+            || !self.active(now)
+            || (self.owner_pid != 0 && requestor_pid == self.owner_pid)
+    }
+}
+/// # Safety
+/// `policy` is initialized and synchronized. The requestor PID must come from
+/// WDF, not a client request; admission is not capability authorization.
+#[no_mangle]
+pub unsafe extern "C" fn scx_source_open_allowed(
+    policy: *const Policy,
+    now: u64,
+    requestor_pid: u32,
+    desired_access: u32,
+) -> u32 {
+    if policy.is_null() {
+        return 0;
+    }
+    u32::from(unsafe { &*policy }.allows_open(now, requestor_pid, desired_access))
 }
 /// # Safety
 /// `bytes` references `length` readable bytes; `out` is writable and disjoint.
@@ -235,11 +273,12 @@ mod tests {
             lease: 77,
             deadline: 4000,
             capability: [42; 32],
+            owner_pid: 1234,
         }
     }
     #[test]
     fn round_trip_abi() {
-        assert_eq!(core::mem::size_of::<Policy>(), 48);
+        assert_eq!(core::mem::size_of::<Policy>(), 56);
         assert!(Policy::decode(&policy().encode(), 1000) == Some(policy()));
     }
     #[test]
@@ -292,7 +331,7 @@ mod tests {
         for len in 0..64 {
             assert!(Policy::decode(&b[..len], 1000).is_none());
         }
-        for n in [0, 4, 7, 56, 63] {
+        for n in [0, 4, 7, 60, 63] {
             let mut bad = b;
             bad[n] ^= 255;
             assert!(Policy::decode(&bad, 1000).is_none());
@@ -343,5 +382,54 @@ mod tests {
             0
         );
         assert!(p == Policy::default());
+    }
+    #[test]
+    fn data_open_admission_does_not_authorize_reports() {
+        let p = policy();
+        for access in [
+            1,
+            2,
+            4,
+            0x4000_0000,
+            0x8000_0000,
+            0xc000_0000,
+            0x1000_0000,
+            0x0200_0000,
+        ] {
+            assert!(p.allows_open(1000, p.owner_pid, access));
+            assert!(!p.allows_open(1000, 0, access));
+            assert!(!p.allows_open(1000, p.owner_pid + 1, access));
+        }
+        assert!(!p.allows(1000, &[0; 32]));
+        assert!(!p.authenticates(1000, &[0; 32]));
+        assert!(p.allows(1000, &p.capability));
+    }
+    #[test]
+    fn metadata_and_expired_opens_remain_available() {
+        let p = policy();
+        for access in [0, 0x80, 0x0010_0080] {
+            assert!(p.allows_open(1000, 0, access));
+            assert!(p.allows_open(1000, 5678, access));
+        }
+        assert!(p.allows_open(p.deadline, 5678, 0xc000_0000));
+        assert!(Policy::default().allows_open(1000, 0, 0xc000_0000));
+        let next = Policy {
+            owner_pid: 5678,
+            ..p
+        };
+        assert!(!next.allows_open(1000, p.owner_pid, 2));
+        assert!(next.allows_open(1000, next.owner_pid, 2));
+    }
+    #[test]
+    fn legacy_policy_cannot_accidentally_disable_isolation() {
+        let mut frame = policy().encode();
+        frame[4..8].copy_from_slice(&2u32.to_le_bytes());
+        frame[56..64].fill(0);
+        let p = Policy::decode(&frame, 1000).unwrap();
+        assert!(!p.allows_open(1000, 1234, 2));
+        assert!(!p.allows(1000, &[0; 32]));
+        assert!(p.allows(1000, &p.capability));
+        frame[4..8].copy_from_slice(&3u32.to_le_bytes());
+        assert!(Policy::decode(&frame, 1000).is_none());
     }
 }

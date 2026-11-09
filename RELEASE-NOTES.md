@@ -1,4 +1,35 @@
-# SCX VPad v0.1.1-preview.2 — native revision 0.1.0.38
+# SCX VPad v0.4.0 Stable — native revision 0.1.0.39
+
+Windows 11 x64. Release version 0.4.0 promotes the existing qualified feature
+set and the tested Source Guard correction to the stable channel. Windows
+native file/INF versions remain 0.1.0.39; SDK and installation-schema versions
+remain 0.1.0. Virtual report layouts and controller identities are unchanged.
+
+- Source Guard rejects foreign data opens while a lease is active. Metadata
+  opens remain available. Allowed creates continue to the underlying HID driver.
+- The owner PID comes from the service's authenticated pipe client, whose
+  process handle remains pinned for the lease. PID admission never authorizes
+  reports: every data handle still needs its existing secret capability.
+- Private policy v3 carries that PID. The service checks driver support before
+  publishing it, avoiding silent loss of isolation with older filters. Public
+  status and capability protocols remain compatible with the installed SCX app.
+- Policy refresh is serialized and runs before each create to avoid a timer
+  window after lease activation. Expiry restores ordinary open behavior.
+- Source Guard uses the official UMDF 2.33 create security context; the minimum
+  supported operating system remains Windows 11 build 22000.
+- A bounded DirectInput test covers guard off/on/off, handles opened before the
+  lease, foreign opens, and owner capability checks. The .38 comparison produced
+  successful foreign opens followed by read faults. It did not reproduce the
+  complete Tekken hang. The installed .39 candidate passed the live controller
+  checks and the user reported no freeze in the requested Tekken retest with
+  Source Guard active. This is one local retest, not long-duration qualification.
+
+The service and Source Guard filter must be updated together. SCX Store app
+2.5.5.0 was used for the successful Tekken retest; the app is a separate product
+and is not bundled in this driver release. Existing GameInput late-discovery
+limitations and the explicit re-register workaround remain documented below.
+
+## Previous v0.1.1-preview.2 — native revision 0.1.0.38
 
 This preview contains a targeted Source Guard stability change, a Sony client
 optimization and new latency diagnostics. The qualified physical model set,

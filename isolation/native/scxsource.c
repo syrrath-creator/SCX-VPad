@@ -2,20 +2,25 @@
  * Policy is read-only here, protected by an administrator/SYSTEM-only ACL.
  * Every authorized HID handle carries a random 256-bit capability, never a PID.
  */
+#pragma warning(push)
+/* WDF 2.33's inline missing-API reporter intentionally ignores its result. */
+#pragma warning(disable: 28193)
 #include "../../driver/scx_windows.h"
+#pragma warning(pop)
 #include <bcrypt.h>
 #include <initguid.h>
 #include <devpkey.h>
-typedef struct { uint64_t Lease,Deadline; uint8_t Capability[32]; } SOURCE_POLICY;
+typedef struct { uint64_t Lease,Deadline; uint8_t Capability[32]; uint32_t OwnerPid; } SOURCE_POLICY;
 extern uint32_t scx_source_decode(const uint8_t*,size_t,uint64_t,SOURCE_POLICY*);
 extern uint32_t scx_source_allowed(const SOURCE_POLICY*,uint64_t,const uint8_t*,uint32_t);
+extern uint32_t scx_source_open_allowed(const SOURCE_POLICY*,uint64_t,uint32_t,uint32_t);
 extern uint32_t scx_source_collection(const uint16_t*,size_t);
 extern uint32_t scx_source_steam_model(const uint16_t*,size_t);
-_Static_assert(sizeof(SOURCE_POLICY)==48,"Rust policy ABI");
+_Static_assert(sizeof(SOURCE_POLICY)==56,"Rust policy ABI");
 static const GUID SourceInterface={0x8cfcc3b9,0xd6f8,0x46d2,{0x9b,0xaa,0xd6,0x4a,0x3e,0x7f,0x5c,0x51}};
 #define SOURCE_STATUS CTL_CODE(FILE_DEVICE_UNKNOWN,0x940,METHOD_BUFFERED,FILE_READ_ACCESS)
 #define SOURCE_AUTH CTL_CODE(FILE_DEVICE_UNKNOWN,0x941,METHOD_BUFFERED,FILE_WRITE_ACCESS)
-typedef struct { SRWLOCK Lock; SOURCE_POLICY Policy; WCHAR Path[160]; volatile LONG64 Allowed,Denied; volatile LONG Closing; WDFTIMER Timer; } SOURCE;
+typedef struct { SRWLOCK Lock,RefreshLock; SOURCE_POLICY Policy; WCHAR Path[160]; volatile LONG64 Allowed,Denied; volatile LONG Closing; WDFTIMER Timer; } SOURCE;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(SOURCE,Source);
 typedef struct { SRWLOCK Lock; uint8_t Capability[32]; } SOURCE_FILE;
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(SOURCE_FILE,SourceFile);
@@ -27,6 +32,7 @@ EVT_WDF_OBJECT_CONTEXT_CLEANUP SourceCleanup;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP SourceFileCleanup;
 EVT_WDF_TIMER SourceTick;
 EVT_WDF_IO_QUEUE_IO_DEFAULT SourceIo;
+EVT_WDF_DEVICE_FILE_CREATE SourceCreate;
 EVT_WDF_REQUEST_COMPLETION_ROUTINE SourceComplete;
 static BOOLEAN Allowed(SOURCE*ctx,const uint8_t*capability,BOOLEAN authenticate) {
  BOOLEAN allowed;AcquireSRWLockShared(&ctx->Lock);
@@ -37,12 +43,33 @@ static BOOLEAN Allowed(SOURCE*ctx,const uint8_t*capability,BOOLEAN authenticate)
 }
 static void Refresh(SOURCE*ctx) {
  HKEY key=NULL;DWORD type=0,size=64;uint8_t bytes[64]={0};SOURCE_POLICY next={0};
+ /* Serialize refreshes so a timer read cannot overwrite a newer create read. */
+ AcquireSRWLockExclusive(&ctx->RefreshLock);
  if(ctx->Path[0] && RegOpenKeyExW(HKEY_LOCAL_MACHINE,ctx->Path,0,KEY_QUERY_VALUE|KEY_WOW64_64KEY,&key)==ERROR_SUCCESS) {
   LSTATUS code=RegQueryValueExW(key,L"Lease",NULL,&type,bytes,&size);RegCloseKey(key);
   if(code==ERROR_SUCCESS && type==REG_BINARY)scx_source_decode(bytes,size,GetTickCount64(),&next);
  }
  AcquireSRWLockExclusive(&ctx->Lock);ctx->Policy=next;ReleaseSRWLockExclusive(&ctx->Lock);
  SecureZeroMemory(bytes,sizeof(bytes));SecureZeroMemory(&next,sizeof(next));
+ ReleaseSRWLockExclusive(&ctx->RefreshLock);
+}
+void SourceCreate(WDFDEVICE device,WDFREQUEST request,WDFFILEOBJECT file) {
+ SOURCE*ctx=Source(device);WDF_REQUEST_PARAMETERS params;WDF_REQUEST_SEND_OPTIONS options;BOOLEAN allowed;ULONG access=0xd0000007,pid=0;
+ if(file)InitializeSRWLock(&SourceFile(file)->Lock);
+ WDF_REQUEST_PARAMETERS_INIT(&params);WdfRequestGetParameters(request,&params);
+ /* DirectInput must fail its data open before entering RawInput Acquire.
+  * Do not wait for the 250ms cache tick after a lease has been published. */
+ Refresh(ctx);
+ if(params.Type==WdfRequestTypeCreate && params.Parameters.Create.SecurityContext){access=params.Parameters.Create.SecurityContext->DesiredAccess;pid=WdfRequestGetRequestorProcessId(request);}
+ AcquireSRWLockShared(&ctx->Lock);
+ allowed=(BOOLEAN)scx_source_open_allowed(&ctx->Policy,GetTickCount64(),pid,access);
+ ReleaseSRWLockShared(&ctx->Lock);
+ if(!allowed){InterlockedIncrement64(&ctx->Denied);WdfRequestComplete(request,STATUS_ACCESS_DENIED);return;}
+ /* Opening is not authorization. SOURCE_AUTH and both I/O checks remain
+  * mandatory, including for handles opened by the admitted owner process. */
+ WdfRequestFormatRequestUsingCurrentType(request);
+ WDF_REQUEST_SEND_OPTIONS_INIT(&options,WDF_REQUEST_SEND_OPTION_SEND_AND_FORGET);
+ if(!WdfRequestSend(request,WdfDeviceGetIoTarget(device),&options))WdfRequestComplete(request,WdfRequestGetStatus(request));
 }
 void SourceTick(WDFTIMER timer) {
  SOURCE*ctx=Source((WDFDEVICE)WdfTimerGetParentObject(timer));
@@ -68,7 +95,7 @@ void SourceIo(WDFQUEUE queue,WDFREQUEST request) {
  WDF_REQUEST_PARAMETERS_INIT(&params);WdfRequestGetParameters(request,&params);ZeroMemory(r,sizeof(*r));
  if(params.Type==WdfRequestTypeDeviceControl)code=params.Parameters.DeviceIoControl.IoControlCode;
  if(code==SOURCE_STATUS){
-  uint64_t data[8]={2,0,0,0,0,0,0,0};PVOID output=NULL;size_t capacity=0;
+  uint64_t data[8]={2,0,0,0,0,0,0,1};PVOID output=NULL;size_t capacity=0;
   AcquireSRWLockShared(&ctx->Lock);data[1]=ctx->Policy.Lease;data[2]=ctx->Policy.Deadline;ReleaseSRWLockShared(&ctx->Lock);
   data[3]=GetTickCount64();data[4]=ctx->Path[0]!=0;data[5]=(uint64_t)InterlockedCompareExchange64(&ctx->Allowed,0,0);data[6]=(uint64_t)InterlockedCompareExchange64(&ctx->Denied,0,0);
   status=WdfRequestRetrieveOutputBuffer(request,sizeof(data),&output,&capacity);
@@ -131,12 +158,12 @@ NTSTATUS SourceAdd(WDFDRIVER driver,PWDFDEVICE_INIT init) {
  UNREFERENCED_PARAMETER(driver);WdfFdoInitSetFilter(init);
  WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&requestAttributes,REQUEST_SOURCE);WdfDeviceInitSetRequestAttributes(init,&requestAttributes);
  WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&fileAttributes,SOURCE_FILE);fileAttributes.EvtCleanupCallback=SourceFileCleanup;
- WDF_FILEOBJECT_CONFIG_INIT(&files,WDF_NO_EVENT_CALLBACK,WDF_NO_EVENT_CALLBACK,WDF_NO_EVENT_CALLBACK);
+ WDF_FILEOBJECT_CONFIG_INIT(&files,SourceCreate,WDF_NO_EVENT_CALLBACK,WDF_NO_EVENT_CALLBACK);
  files.FileObjectClass=WdfFileObjectWdfCannotUseFsContexts;files.AutoForwardCleanupClose=WdfTrue;
  WdfDeviceInitSetFileObjectConfig(init,&files,&fileAttributes);
  WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes,SOURCE);attributes.EvtCleanupCallback=SourceCleanup;attributes.ExecutionLevel=WdfExecutionLevelPassive;attributes.SynchronizationScope=WdfSynchronizationScopeNone;
  status=WdfDeviceCreate(&init,&attributes,&device);if(!NT_SUCCESS(status))return status;
- ctx=Source(device);InitializeSRWLock(&ctx->Lock);PolicyPath(device,ctx);Refresh(ctx);
+ ctx=Source(device);InitializeSRWLock(&ctx->Lock);InitializeSRWLock(&ctx->RefreshLock);PolicyPath(device,ctx);Refresh(ctx);
  WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queue,WdfIoQueueDispatchParallel);queue.PowerManaged=WdfFalse;queue.EvtIoDefault=SourceIo;
  status=WdfIoQueueCreate(device,&queue,WDF_NO_OBJECT_ATTRIBUTES,WDF_NO_HANDLE);if(!NT_SUCCESS(status))return status;
  status=WdfDeviceCreateDeviceInterface(device,&SourceInterface,NULL);if(!NT_SUCCESS(status))return status;

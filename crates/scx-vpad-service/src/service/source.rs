@@ -2,7 +2,7 @@
 use super::*;
 use scx_source_policy::Policy;
 use scx_vpad_client::{
-    source::{clock_ms, open_verified_source},
+    source::{clock_ms, open_admission_source},
     source_wire::*,
 };
 use std::time::{Duration, Instant};
@@ -129,9 +129,13 @@ struct Lease {
     name: String,
     capability: Capability,
     number: u64,
+    owner_pid: u32,
 }
 impl Lease {
-    fn create(id: &str, number: u64) -> io::Result<Self> {
+    fn create(id: &str, number: u64, owner_pid: u32) -> io::Result<Self> {
+        if owner_pid == 0 {
+            return Err(fail("source owner process is missing"));
+        }
         let mut alg = ptr::null_mut();
         if unsafe { BCryptOpenAlgorithmProvider(&mut alg, BCRYPT_SHA256_ALGORITHM, ptr::null(), 0) }
             < 0
@@ -208,6 +212,7 @@ impl Lease {
             name,
             capability,
             number,
+            owner_pid,
         };
         lease.renew()?;
         Ok(lease)
@@ -217,6 +222,7 @@ impl Lease {
             lease: self.number,
             deadline: clock_ms().saturating_add(3000),
             capability: *self.capability.bytes(),
+            owner_pid: self.owner_pid,
         };
         let mut frame = policy.encode();
         wipe(&mut policy.capability);
@@ -247,7 +253,7 @@ pub(super) fn serve_source(pipe: &Handle, stop: &Handle, identity: &Identity) ->
     let size =
         transfer_with_cancellation(pipe, &mut payload, false, stop.0, identity.process.0, 1500)?;
     let id = decode_instance(&payload[..size])?;
-    let _source = match open_verified_source(&id) {
+    let _source = match open_admission_source(&id) {
         Ok(h) => h,
         Err(_) => {
             reply(pipe, stop, OP_SOURCE_ACQUIRE, STATUS_UNSUPPORTED, 0, "")?;
@@ -262,7 +268,9 @@ pub(super) fn serve_source(pipe: &Handle, stop: &Handle, identity: &Identity) ->
         }
     };
     let number = NEXT_LEASE.fetch_add(1, Ordering::Relaxed);
-    let lease = Lease::create(&id, number)?;
+    // OS-authenticated identity; its process handle remains pinned for this
+    // entire lease. PID permits opening only, never authorizes report I/O.
+    let lease = Lease::create(&id, number, identity.pid)?;
     reply_capability(
         pipe,
         stop,

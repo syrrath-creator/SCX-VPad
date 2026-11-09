@@ -1,3 +1,55 @@
+# v0.4.0 Stable / native .39 validation — 9 November 2026
+
+The locally installed .39 service/filter pair
+preserved the authorized account and device identity. The physical Bluetooth
+DualSense Edge reported driver version .39 and PnP problem code 0. Installation
+retains a verified .38 recovery package. These installed checks preceded the
+stable packaging step; they must not be described as a second installation of
+the final stable download. The stable payload is rebuilt from the release
+checkout with the same Source Guard production changes. Unrelated local
+benchmark schema/pacer experiments are excluded; the published .38 benchmark
+source and documentation are retained.
+
+- Local fix checkout tests: 116 passed, 2 ignored; separate source-policy tests: 16 passed.
+  Workspace Clippy with warnings denied, formatting, native static analysis,
+  INF/catalog checks and installer/package checks passed.
+- Live normal-user lease: new owner RW open succeeded, three unauthorized or
+  incorrectly authorized read cases returned error 5, and valid authorization
+  returned a 78-byte physical input report.
+- A separate process opening the known physical HID path directly received
+  error 5 at CreateFileW, measured at 0 ms. This check does not depend on
+  DirectInput enumeration, which omitted the protected Edge while the lease
+  remained healthy.
+- Three unguarded DirectInput phases each returned 100/100 successful states.
+  With a handle opened before the lease, all 100 reacquire attempts returned
+  promptly with errors. No supervisor timeout occurred.
+- The installed SCX Store app 2.5.5.0 and Tekken were then started by the user.
+  A separate foreign-open check confirmed isolation remained active while
+  Tekken was running and responding. The user reported no freeze in the
+  requested menu/character-selection retest with Source Guard enabled.
+
+The original hang dump placed Tekken's GameThread in DirectInput HID acquire
+for the physical Edge. The standalone .38 comparison reproduced successful
+foreign opens followed by read faults, not the entire game hang. The .39 game
+result is a user-confirmed local retest, not long-duration qualification or a
+separate post-fix test of every virtual output type.
+
+## Stable release packaging
+
+The clean release checkout passed 111 default-feature tests (2 ignored),
+112 all-feature tests (3 ignored), 16 isolated policy tests, strict Clippy in
+both configurations, native analysis and INF/catalog validation. All 46 Setup
+checks passed; package, recovery and replacement-identity checks also passed
+under Windows PowerShell 5.1.
+
+Both native driver DLLs and all three INF files are byte-for-byte identical to
+the locally installed .39 candidate. The rebuilt service has identical
+executable code and data; only PE/debug timestamps and the CodeView debug
+identifier differ. The XInput diagnostic differs only in timestamps. The
+command-line utility and driver catalogs were rebuilt and are not byte-identical.
+The ZIP manifest declares the stable channel and Setup embeds that exact ZIP.
+The final download digests are published in SHA256SUMS.txt.
+
 # Native .38 preview validation — 29 October 2026
 
 Qualification for **v0.1.1-preview.2 / native 0.1.0.38**. This section separates

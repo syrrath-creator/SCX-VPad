@@ -1,6 +1,19 @@
 # SCX VPad
 
-**v0.1.1-preview.2 · native revision 0.1.0.38 · Windows 11 x64**
+**v0.4.0 Stable · native revision 0.1.0.39 · Windows 11 x64**
+
+This release adds early Source Guard data-open rejection for processes
+outside the authenticated lease. It targets a Tekken DirectInput acquire hang
+observed on the physical Bluetooth DualSense Edge. Per-handle capability checks
+remain mandatory for SCX input and output. The service and Source Guard filter
+must be updated together; the existing SCX app protocol remains compatible.
+The standalone test reproduced the previous open-success/read-failure sequence,
+but not the complete game hang. On 9 November, the installed .39 candidate passed
+the live controller checks and the user reported no freeze in the requested
+Tekken menu/character-selection retest with Source Guard active. See
+[VALIDATION.md](VALIDATION.md) for the measured results and limits.
+
+The preceding .38 preview changes are also included in this stable release:
 
 This preview improves Source Guard's internal-panic handling, reduces redundant
 Sony client payload barriers and adds independently observed HID latency tooling.
@@ -9,8 +22,8 @@ Read-only SDK discovery reports Source Guard preparation/status and validates
 exact model identifiers; it does not automatically install or authorize devices.
 The client optimization requires an application rebuilt with this SDK; installing
 the driver alone does not update the client inside an existing SCX Store app.
-No end-to-end latency win is claimed. The stable v0.1.0 / .35 release remains
-available. See [RELEASE-NOTES.md](RELEASE-NOTES.md) for scope and requirements,
+No end-to-end latency win is claimed. Earlier releases remain available.
+See [RELEASE-NOTES.md](RELEASE-NOTES.md) for scope and requirements,
 [VALIDATION.md](VALIDATION.md) for the measured results, and the
 [benchmark guide](docs/latency-benchmark.md) for reproducible methodology.
 
@@ -81,8 +94,10 @@ normal connections, disconnections and explicit reconnection do not elevate.
 
 ## Install
 
-Download **[SCX-VPad-0.1.0.38-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.1.1-preview.2/SCX-VPad-0.1.0.38-Setup-x64.exe)**
-from [the release](https://github.com/syrrath-creator/SCX-VPad/releases/tag/v0.1.1-preview.2).
+Download **[SCX-VPad-0.4.0-Setup-x64.exe](https://github.com/syrrath-creator/SCX-VPad/releases/download/v0.4.0/SCX-VPad-0.4.0-Setup-x64.exe)**
+from [the stable release](https://github.com/syrrath-creator/SCX-VPad/releases/tag/v0.4.0).
+The release version is 0.4.0; Windows driver and Setup file versions remain
+0.1.0.39. The SDK and installation-schema version remain 0.1.0.
 Compare its checksum with `SHA256SUMS.txt`.
 
 1. Close SCX and games. Run Setup from the Windows account that will use SCX.
@@ -156,7 +171,7 @@ redistributed in the package.
 cargo fetch --locked
 ./scripts/fetch-wdk.ps1
 ./scripts/cargo.ps1 -CargoArgs @('test','--workspace','--locked','--offline')
-./scripts/build-package.ps1 -IncludeSourceGuard -SourceModelFile ./isolation/models-qualified.txt -ReleaseChannel preview -Destination ./dist/SCX-VPad-0.1.0.38-windows-x64
+./scripts/build-package.ps1 -IncludeSourceGuard -SourceModelFile ./isolation/models-qualified.txt -ReleaseChannel stable -Destination ./dist/SCX-VPad-0.4.0-windows-x64
 ```
 
 The stable package requires Source Guard and cannot skip tests. The build checks
@@ -169,8 +184,8 @@ drivers or services. Installed tests remain a separate release qualification.
 ZIP the package contents with `package-manifest.json` at archive root, then:
 
 ```powershell
-./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.38-windows-x64.zip -ExpectedSha256 $verifiedZipSha256 -OutputDirectory ./artifacts/setup38
-./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.1.0.38-windows-x64.zip -BuildDirectory ./artifacts/setup38
+./scripts/build-setup.ps1 -PackageZip ./SCX-VPad-0.4.0-windows-x64.zip -ExpectedSha256 $verifiedZipSha256 -OutputDirectory ./artifacts/setup04
+./scripts/test-setup.ps1 -PackageZip ./SCX-VPad-0.4.0-windows-x64.zip -BuildDirectory ./artifacts/setup04
 ```
 
 The Setup tests exercise the real package reader against modified archives;

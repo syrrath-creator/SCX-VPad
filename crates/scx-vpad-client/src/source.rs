@@ -385,6 +385,22 @@ pub fn open_verified_source(instance: &str) -> io::Result<Handle> {
         .ok_or_else(|| fail("SCX source filter is not installed for this device"))?;
     verify_source_path(&path)
 }
+/// Service-side compatibility check before publishing a v3 policy. Old app
+/// clients keep the v2 status and capability protocol, but an old filter must
+/// never silently ignore the new policy and expose physical input.
+pub fn open_admission_source(instance: &str) -> io::Result<Handle> {
+    let h = open_verified_source(instance)?;
+    let event = Handle::event()?;
+    let mut status = [0u8; 64];
+    if ioctl(&h, &event, SOURCE_STATUS, &[], &mut status, 1000)? != 64
+        || u64::from_le_bytes(status[56..64].try_into().unwrap()) & 1 == 0
+    {
+        return Err(fail(
+            "Source Guard driver update required for safe HID open admission",
+        ));
+    }
+    Ok(h)
+}
 fn verify_source_path(path: &str) -> io::Result<Handle> {
     let h = open(path)?;
     let event = Handle::event()?;

@@ -83,7 +83,15 @@ capabilities; replayed or expired authorization cannot acquire source access.
 The management service never proxies physical input reports. Client teardown
 or lease expiry restores normal input access. The filter is not installed as a
 HID class-wide filter and does not reserve keyboards, mice or arbitrary devices.
-The source remains enumerable; this is input/output isolation, not device hiding.
+The source remains enumerable through PnP/HID metadata; consumer APIs that
+require data opens may omit the protected controller from their own lists.
+The .39 filter also rejects foreign data opens during an active lease.
+The service derives the admitted PID from the authenticated pipe client and
+pins that process for the lease lifetime. This is only open admission: the
+existing per-handle secret capability remains required for report access,
+including handles opened by the owner. Metadata opens remain available. The
+service verifies filter support before writing the private v3 policy; a legacy
+v2 policy retains I/O isolation and denies new data opens while active.
 No new kernel-mode SCX binary is installed. The Windows UMDF host/reflector is
 part of the trusted platform, and administrative code remains outside this
 isolation boundary.
