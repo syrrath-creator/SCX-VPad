@@ -1,0 +1,28 @@
+{
+  "tagName": "v0.4.0",
+  "targetCommit": "cb1c409586b5c530833ab99a3bc2acc4fc29995f",
+  "title": "SCX VPad 0.4.0 Stable — Source Guard / Tekken fix",
+  "body": "Stable release for Windows 11 x64. Native driver revision **0.1.0.39**; release version **0.4.0**.\n\n### Source Guard / Tekken correction\n\nForeign programs are now rejected when they try to open a protected physical controller for data access. This avoids the previous successful-open/failed-read path implicated in the Tekken DirectInput hang. SCX still needs its secret authorization on every data handle.\n\nThe tested Bluetooth DualSense Edge passed the bounded regression, and the user confirmed that the affected Tekken menu/character-selection scenario no longer froze with Source Guard active. This is a successful local retest, not a universal game-compatibility claim.\n\n### Download and update\n\nUse **SCX-VPad-0.4.0-Setup-x64.exe** below, or the matching ZIP for manual installation. Verify downloads with **SHA256SUMS.txt**.\n\nClose SCX and games, run Setup from the Windows account that uses SCX, select Install/Reinstall and approve the normal UAC prompt. Update the service and filter together. Controller identities and the authorized account are preserved. The SCX Store app is separate and is not included.\n\n### Verification\n\n- Clean release-source tests: 111 default-feature tests, 112 all-feature tests, 16 source-policy tests, strict Clippy and native driver/package checks.\n- 46 Setup tests plus package, recovery and identity regressions.\n- Both driver DLLs and all three INFs match the successfully tested .39 candidate byte for byte. Service executable code/data match; build metadata differ.\n- Live regression: foreign raw open denied, valid owner access preserved, 300/300 guard-off state cycles, bounded failure for all 100 preopened-handle reacquire attempts, and recovery after lease release.\n\nSee **RELEASE-QUALIFICATION.txt** and [VALIDATION.md](https://github.com/syrrath-creator/SCX-VPad/blob/v0.4.0/VALIDATION.md) for the precise scope.\n\nThe existing GameInput late-discovery workaround remains applicable. Stable is the release channel; this is not WHQL certification. Setup is not publicly publisher-signed and uses the existing local signing process. No private signing key is distributed.\n",
+  "artifacts": [
+    {
+      "name": "SCX-VPad-0.4.0-Setup-x64.exe",
+      "sha256": "fcabd25ec9c53f25cbcec6836f69c6ad8e7f00d694fde9b95bddeb5918295f2f",
+      "size": 834048
+    },
+    {
+      "name": "SCX-VPad-0.4.0-windows-x64.zip",
+      "sha256": "1fa5e5e7ad8b8280d351e8121c09a98cf6146ceff75bbec779680d46fad825ef",
+      "size": 786515
+    },
+    {
+      "name": "RELEASE-QUALIFICATION.txt",
+      "sha256": "6308c17cc7a98003f75c8f49d8192b76a8d8f3be413333607615ec6f5f76263d",
+      "size": 3090
+    },
+    {
+      "name": "SHA256SUMS.txt",
+      "sha256": "8cb87be3a65a525b018ef8f0efa1637b88f7226b0eb6791a757578147a3b7d46",
+      "size": 284
+    }
+  ]
+}

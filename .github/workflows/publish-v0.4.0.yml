@@ -1,0 +1,26 @@
+name: Publish reviewed SCX-VPad 0.4.0
+on:
+  push:
+    branches: [release/v0.4.0]
+permissions: {}
+concurrency:
+  group: publish-scx-vpad-v0.4.0
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'syrrath-creator/SCX-VPad' && github.event_name == 'push' && github.ref == 'refs/heads/release/v0.4.0' && github.event.deleted == false
+    runs-on: windows-latest
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify reviewed files and publish this release only
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./scripts/publish-v0.4.0.ps1

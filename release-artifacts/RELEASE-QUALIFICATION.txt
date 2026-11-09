@@ -1,0 +1,53 @@
+SCX VPad v0.4.0 Stable - release qualification
+9 November 2026
+
+Release version: 0.4.0
+Native Windows driver and Setup file version: 0.1.0.39
+SDK and installation-schema version: 0.1.0
+Windows 11 x64, build 22000 or newer.
+
+Source Guard now rejects foreign data opens during an authenticated lease.
+The admitted owner still needs the existing secret capability on every data
+handle. Private policy v3 and a service/filter support check prevent accidental
+activation against an older filter. Public SCX app protocols remain compatible.
+
+The clean stable release checkout passed 111 default-feature Rust tests
+(2 ignored), 112 all-feature tests (3 ignored), 16 isolated policy tests,
+strict Clippy in both configurations, formatting, native /analyze /W4 /WX,
+INF and catalog checks, 46 graphical Setup tests, 23 package checks,
+11 recovery tests and 21 replacement-identity tests. Relevant PowerShell
+regressions also passed under Windows PowerShell 5.1.
+
+Both native driver DLLs and all three INF files are byte-for-byte identical
+to the locally installed and tested .39 candidate. The rebuilt service has
+identical executable code and data; only PE/debug timestamps and the CodeView
+identifier differ. The XInput diagnostic differs only in timestamps.
+The command-line utility and driver catalogs were rebuilt and are not
+byte-identical. Unrelated local benchmark schema/pacer experiments are excluded;
+the previously published benchmark implementation is retained.
+
+Native file SHA256:
+ScxSource.dll 79c0ca839195d09755d29c9428ec027030e905e9db136dabcdb145326f951d1b
+ScxVPad.dll   7a72800e3f0e847cb6ba8c5459d9e126d86bfb25a09893efe0a2f276939e47f8
+
+The bounded normal-user test on a physical Bluetooth DualSense Edge passed:
+- 300 successful guard-off acquire/state cycles across three phases.
+- A separate process was denied at raw read/write open with Win32 error 5.
+- Unauthorized owner reads and wrong-token attempts remained denied.
+- Correct owner authorization returned a real 78-byte input report.
+- A healthy active lease caused fresh DirectInput enumeration to omit the Edge.
+- A preopened DirectInput handle returned promptly in all 100 reacquire cycles.
+- Physical DirectInput access recovered when the lease ended; no timeout occurred.
+
+The user retested the affected Tekken menu/character-selection scenario with
+SCX Store app 2.5.5.0 and active Source Guard, and reported no further freeze.
+A separate access check confirmed that protection remained active while Tekken
+was running and responding. This is one local retest, not long-duration
+qualification, a separate test of every output type, or universal compatibility.
+The full game hang was not reproduced by the standalone comparison probe.
+
+Stable is a release channel, not WHQL certification. Setup is not publicly
+publisher-signed; installation uses the existing machine-local signing flow.
+No signing private key is distributed. The SCX Store app is not bundled.
+The existing explicit re-register workaround for late GameInput discovery
+remains applicable. See README.md, VALIDATION.md and SECURITY.md in the source.
